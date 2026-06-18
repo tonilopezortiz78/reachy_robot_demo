@@ -1,26 +1,21 @@
 """
 demo_face.py — Face Tracking
 =============================
-Reachy Mini watches for a face via its head camera and follows it in real time.
-Head yaw/pitch track the face directly; body yaw slowly rotates to absorb large
-horizontal offsets so the head stays centred in its travel range.
+Camera feed appears IMMEDIATELY in a window. Daemon starts in the background.
+Once the robot is ready, head follows any detected face in real time.
 
-Reactions:
-  Face found   → antennas rise, head tracks smoothly
-  Face lost    → antennas droop, head drifts back to centre
-  First detect → excited antenna flutter
-
-Live window shows camera feed with:
-  - Green box + crosshair on the detected face
-  - White crosshair at frame centre (the tracking target)
-  - Error arrows showing how far off-centre the face is
+Overlays:
+  White crosshair  = frame centre (tracking target)
+  Green box + crosshair = detected face
+  Orange line = error from centre to face
+  Top-left status = STARTING / SEARCHING / FACE LOCKED
 
 Run:  ./run.sh demos/demo_face.py
 Press q in the preview window or Ctrl-C to stop.
 """
-import math
 import socket
 import subprocess
+import threading
 import time
 
 import cv2
@@ -32,31 +27,29 @@ from reachy_mini.utils import create_head_pose
 # Config
 # ---------------------------------------------------------------------------
 
-CAM_DEV    = "/dev/video2"
-CAM_W, CAM_H = 640, 360     # detection resolution — lower = faster loop
-FPS_TARGET = 20             # control loop Hz
+CAM_DEV      = "/dev/video2"
+CAM_W, CAM_H = 640, 360
+FPS_TARGET   = 20
 
-# Proportional gains — how far the head moves per unit of normalised error
-YAW_GAIN    = 0.90          # head yaw:   error ±1 → ±0.9 rad (±52°)
-PITCH_GAIN  = 0.38          # head pitch: error ±1 → ±0.38 rad (±22°)
-BODY_GAIN   = 0.80          # body yaw added for large horizontal offsets
+YAW_GAIN   = 0.90
+PITCH_GAIN = 0.38
+BODY_GAIN  = 0.80
+HEAD_ALPHA = 0.18
+BODY_ALPHA = 0.06
 
-# Smoothing — lower alpha = smoother but more lag
-HEAD_ALPHA  = 0.18          # head position filter
-BODY_ALPHA  = 0.06          # body rotates slower than head
+ANT_EXCITED =  0.70
+ANT_IDLE    =  0.15
+ANT_DROOP   = -0.25
 
-# Antenna angles
-ANT_EXCITED  =  0.70        # up when face detected
-ANT_IDLE     =  0.15        # neutral / searching
-ANT_DROOP    = -0.25        # down when face lost for a while
+LOST_TIMEOUT = 2.5
 
-LOST_TIMEOUT = 2.5          # seconds before "face lost" behaviour kicks in
+SPEAKER = "plughw:2,0"
 
 # ---------------------------------------------------------------------------
-# Daemon
+# Daemon (runs in a background thread so the camera opens first)
 # ---------------------------------------------------------------------------
 
-def start_daemon():
+def _launch_daemon(result: dict):
     proc = subprocess.Popen(
         ["reachy-mini-daemon", "--no-media"], start_new_session=True,
     )
@@ -64,224 +57,230 @@ def start_daemon():
         time.sleep(0.5)
         try:
             with socket.create_connection(("127.0.0.1", 8000), timeout=0.3):
-                return proc
+                result["proc"] = proc
+                result["ready"] = True
+                return
         except OSError:
             pass
-    raise RuntimeError("Daemon did not start within 15 s")
+    result["error"] = "Daemon did not start within 15 s"
 
 # ---------------------------------------------------------------------------
 # Sound
 # ---------------------------------------------------------------------------
 
-SPEAKER = "plughw:2,0"
-
-def _blip(freq, dur=0.07, vol=0.5):
-    subprocess.Popen(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", f"aevalsrc=sin(2*PI*{freq}*t)*{vol}:c=mono:s=22050",
-         "-t", str(dur), "-f", "alsa", SPEAKER],
-    )
-
 def found_chirp():
-    """Rising chirp — face acquired."""
-    subprocess.Popen(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", "aevalsrc=sin(2*PI*(600+800*t)*t)*0.55:c=mono:s=22050",
-         "-t", "0.14", "-f", "alsa", SPEAKER],
-    )
+    subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "aevalsrc=sin(2*PI*(600+800*t)*t)*0.55:c=mono:s=22050",
+        "-t", "0.14", "-f", "alsa", SPEAKER])
 
 def lost_chirp():
-    """Falling chirp — face lost."""
-    subprocess.Popen(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", "aevalsrc=sin(2*PI*(900-700*t)*t)*0.45:c=mono:s=22050",
-         "-t", "0.12", "-f", "alsa", SPEAKER],
-    )
+    subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "aevalsrc=sin(2*PI*(900-700*t)*t)*0.45:c=mono:s=22050",
+        "-t", "0.12", "-f", "alsa", SPEAKER])
+
+# ---------------------------------------------------------------------------
+# Drawing helpers
+# ---------------------------------------------------------------------------
+
+ARM, GAP = 22, 6
+
+def crosshair(img, px, py, color, thickness=2):
+    cv2.line(img, (px - ARM, py), (px - GAP, py), color, thickness)
+    cv2.line(img, (px + GAP, py), (px + ARM, py), color, thickness)
+    cv2.line(img, (px, py - ARM), (px, py - GAP), color, thickness)
+    cv2.line(img, (px, py + GAP), (px, py + ARM), color, thickness)
+    cv2.circle(img, (px, py), GAP, color, thickness)
+
+def draw_overlay(frame, face_box, face_seen, fps, robot_ready):
+    fh, fw = frame.shape[:2]
+    cx_px, cy_px = fw // 2, fh // 2
+
+    # Centre crosshair (white, thin)
+    crosshair(frame, cx_px, cy_px, (210, 210, 210), 1)
+
+    if face_box is not None:
+        x, y, w, h = face_box
+        # Bounding box (mirrored coords for display)
+        mx = fw - (x + w)   # mirror x for display
+        cv2.rectangle(frame, (mx, y), (mx + w, y + h), (0, 220, 0), 2)
+        fcx = mx + w // 2
+        fcy = y + h // 2
+        crosshair(frame, fcx, fcy, (0, 220, 0), 2)
+        cv2.line(frame, (cx_px, cy_px), (fcx, fcy), (0, 180, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, "TRACKING", (mx, y - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 0), 1)
+
+    # Status
+    if not robot_ready:
+        status, color = "STARTING ROBOT...", (0, 200, 255)
+    elif face_seen:
+        status, color = "FACE LOCKED", (0, 220, 0)
+    else:
+        status, color = "SEARCHING...", (0, 120, 220)
+    cv2.putText(frame, status, (8, 26),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+    cv2.putText(frame, f"{fps:.0f} fps", (8, fh - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (140, 140, 140), 1)
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
-    print("Face Tracking Demo — Ctrl-C to stop")
+    print("Face Tracking — opening camera...")
 
-    # OpenCV Haar cascade — bundled with cv2, no download needed
     cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     detector = cv2.CascadeClassifier(cascade_path)
-    if detector.empty():
-        raise RuntimeError("Haar cascade not found — reinstall opencv-python")
 
-    print("  Starting daemon...")
-    daemon_proc = start_daemon()
-    print("  Daemon ready.")
-
+    # Open camera immediately
     cap = cv2.VideoCapture(CAM_DEV, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_W)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
     cap.set(cv2.CAP_PROP_FPS, 30)
     if not cap.isOpened():
-        raise RuntimeError(f"Cannot open camera {CAM_DEV}")
-    print(f"  Camera {CAM_DEV} open — {int(cap.get(3))}x{int(cap.get(4))}")
+        raise RuntimeError(f"Cannot open {CAM_DEV}")
+
+    WIN = "Reachy — Face Tracking  (q to quit)"
+    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WIN, 800, 450)
+
+    # Start daemon in background thread
+    daemon_result = {"ready": False, "proc": None, "error": None}
+    daemon_thread = threading.Thread(target=_launch_daemon, args=(daemon_result,), daemon=True)
+    daemon_thread.start()
+    print("  Starting robot daemon in background...")
+
+    # State
+    target_yaw = target_pitch = target_body = 0.0
+    ant_target = ANT_IDLE
+    face_seen  = False
+    last_seen_t = 0.0
+    loop_dt    = 1.0 / FPS_TARGET
+    fps_t      = time.time()
+    fps_count  = fps_display = 0.0
+    last_face_box = None
+
+    mini = None
+    robot_ready = False
 
     try:
-        with ReachyMini(connection_mode="localhost_only",
-                        media_backend="no_media",
-                        spawn_daemon=False) as mini:
-            mini.wake_up()
-            print("  Watching for faces...\n")
+        while True:
+            t0 = time.time()
 
-            target_yaw   = 0.0
-            target_pitch = 0.0
-            target_body  = 0.0
-            ant_target   = ANT_IDLE
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.05)
+                continue
 
-            face_seen   = False
-            last_seen_t = 0.0
-            loop_dt     = 1.0 / FPS_TARGET
-            fps_t       = time.time()
-            fps_count   = 0
-            fps_display = 0.0
+            # Connect robot once daemon is ready
+            if not robot_ready and daemon_result.get("ready"):
+                if daemon_result.get("error"):
+                    print("  ERROR:", daemon_result["error"])
+                    break
+                mini = ReachyMini(connection_mode="localhost_only",
+                                  media_backend="no_media",
+                                  spawn_daemon=False)
+                mini.__enter__()
+                mini.wake_up()
+                robot_ready = True
+                print("  Robot ready — tracking faces!")
 
-            try:
-                while True:
-                    t0 = time.time()
+            # Face detection
+            gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = detector.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5,
+                minSize=(50, 50), flags=cv2.CASCADE_SCALE_IMAGE,
+            )
 
-                    ret, frame = cap.read()
-                    if not ret:
-                        time.sleep(0.05)
-                        continue
+            now = time.time()
 
-                    gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    faces = detector.detectMultiScale(
-                        gray, scaleFactor=1.1, minNeighbors=5,
-                        minSize=(50, 50), flags=cv2.CASCADE_SCALE_IMAGE,
-                    )
+            if len(faces) > 0:
+                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                last_face_box = (x, y, w, h)
 
-                    now  = time.time()
-                    fw, fh = frame.shape[1], frame.shape[0]
-                    cx_px, cy_px = fw // 2, fh // 2   # frame centre in pixels
+                cx    = (x + w / 2.0) / CAM_W
+                cy    = (y + h / 2.0) / CAM_H
+                err_x = (cx - 0.5) * 2.0
+                err_y = (cy - 0.5) * 2.0
 
-                    face_cx_px, face_cy_px = None, None
+                target_yaw   = HEAD_ALPHA * (err_x * YAW_GAIN)   + (1 - HEAD_ALPHA) * target_yaw
+                target_pitch = HEAD_ALPHA * (err_y * PITCH_GAIN)  + (1 - HEAD_ALPHA) * target_pitch
+                target_body  = BODY_ALPHA * (err_x * BODY_GAIN)   + (1 - BODY_ALPHA) * target_body
 
-                    if len(faces) > 0:
-                        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                ant_target  = ANT_EXCITED
+                last_seen_t = now
 
-                        cx    = (x + w / 2.0) / CAM_W
-                        cy    = (y + h / 2.0) / CAM_H
-                        err_x = (cx - 0.5) * 2.0
-                        err_y = (cy - 0.5) * 2.0
+                if not face_seen:
+                    print("  ✓ Face detected!")
+                    found_chirp()
+                    face_seen = True
 
-                        new_yaw   = err_x * YAW_GAIN
-                        new_pitch = err_y * PITCH_GAIN
-                        new_body  = err_x * BODY_GAIN
+            else:
+                elapsed_lost = now - last_seen_t
+                if face_seen and elapsed_lost > LOST_TIMEOUT:
+                    print("  ✗ Face lost — searching...")
+                    lost_chirp()
+                    face_seen = False
+                    last_face_box = None
 
-                        target_yaw   = HEAD_ALPHA * new_yaw   + (1 - HEAD_ALPHA) * target_yaw
-                        target_pitch = HEAD_ALPHA * new_pitch + (1 - HEAD_ALPHA) * target_pitch
-                        target_body  = BODY_ALPHA * new_body  + (1 - BODY_ALPHA) * target_body
+                if elapsed_lost > LOST_TIMEOUT:
+                    target_yaw   *= 0.97
+                    target_pitch *= 0.97
+                    target_body  *= 0.95
+                    ant_target = ANT_DROOP
+                else:
+                    ant_target = ANT_EXCITED if face_seen else ANT_IDLE
 
-                        ant_target  = ANT_EXCITED
-                        last_seen_t = now
-                        face_cx_px  = int(x + w / 2)
-                        face_cy_px  = int(y + h / 2)
+            # FPS
+            fps_count += 1
+            if now - fps_t >= 1.0:
+                fps_display = fps_count / (now - fps_t)
+                fps_count = 0; fps_t = now
 
-                        if not face_seen:
-                            print("  ✓ Face detected!")
-                            found_chirp()
-                            face_seen = True
+            # Draw on a mirrored copy for display
+            display = cv2.flip(frame, 1)
+            draw_overlay(display, last_face_box if face_seen else None,
+                         face_seen, fps_display, robot_ready)
 
-                        # Draw bounding box
-                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 220, 0), 2)
+            cv2.imshow(WIN, display)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
-                    else:
-                        elapsed_lost = now - last_seen_t
-                        if face_seen and elapsed_lost > LOST_TIMEOUT:
-                            print("  ✗ Face lost — searching...")
-                            lost_chirp()
-                            face_seen = False
+            # Send to robot
+            if robot_ready and mini:
+                yaw   = max(-1.50, min(1.50, target_yaw))
+                pitch = max(-0.36, min(0.36, target_pitch))
+                body  = max(-1.40, min(1.40, target_body))
+                mini.set_target(
+                    head=create_head_pose(pitch=pitch, yaw=yaw, degrees=False),
+                    antennas=[ant_target, ant_target],
+                    body_yaw=body,
+                )
 
-                        if elapsed_lost > LOST_TIMEOUT:
-                            target_yaw   *= 0.97
-                            target_pitch *= 0.97
-                            target_body  *= 0.95
-                            ant_target = ANT_DROOP
-                        else:
-                            ant_target = ANT_EXCITED if face_seen else ANT_IDLE
+            elapsed = time.time() - t0
+            sleep_t = loop_dt - elapsed
+            if sleep_t > 0:
+                time.sleep(sleep_t)
 
-                    # ── Overlay ──────────────────────────────────────────
-                    ARM = 22   # crosshair arm length
-                    GAP =  6   # centre gap
-
-                    def crosshair(img, px, py, color, thickness=2):
-                        cv2.line(img, (px - ARM, py), (px - GAP, py), color, thickness)
-                        cv2.line(img, (px + GAP, py), (px + ARM, py), color, thickness)
-                        cv2.line(img, (px, py - ARM), (px, py - GAP), color, thickness)
-                        cv2.line(img, (px, py + GAP), (px, py + ARM), color, thickness)
-                        cv2.circle(img, (px, py), GAP, color, thickness)
-
-                    # White centre crosshair — tracking target
-                    crosshair(frame, cx_px, cy_px, (220, 220, 220), 1)
-
-                    if face_cx_px is not None:
-                        # Green face crosshair
-                        crosshair(frame, face_cx_px, face_cy_px, (0, 220, 0), 2)
-                        # Error line from centre to face
-                        cv2.line(frame, (cx_px, cy_px), (face_cx_px, face_cy_px),
-                                 (0, 180, 255), 1, cv2.LINE_AA)
-                        # Label
-                        cv2.putText(frame, "TRACKING", (x, y - 8),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 0), 1)
-
-                    # FPS counter
-                    fps_count += 1
-                    if now - fps_t >= 1.0:
-                        fps_display = fps_count / (now - fps_t)
-                        fps_count = 0
-                        fps_t = now
-                    cv2.putText(frame, f"{fps_display:.0f} fps", (8, fh - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1)
-
-                    # Status
-                    status = "FACE LOCKED" if face_seen else "SEARCHING..."
-                    color  = (0, 220, 0) if face_seen else (0, 120, 220)
-                    cv2.putText(frame, status, (8, 24),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
-
-                    # Mirror the display so it feels like a selfie-cam
-                    # (detection uses the unflipped frame — robot coords are correct)
-                    cv2.imshow("Reachy — Face Tracking  (q to quit)",
-                               cv2.flip(frame, 1))
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-                    # ─────────────────────────────────────────────────────
-
-                    yaw   = max(-1.50, min(1.50, target_yaw))
-                    pitch = max(-0.36, min(0.36, target_pitch))
-                    body  = max(-1.40, min(1.40, target_body))
-
-                    mini.set_target(
-                        head=create_head_pose(pitch=pitch, yaw=yaw, degrees=False),
-                        antennas=[ant_target, ant_target],
-                        body_yaw=body,
-                    )
-
-                    elapsed = time.time() - t0
-                    sleep_t = loop_dt - elapsed
-                    if sleep_t > 0:
-                        time.sleep(sleep_t)
-
-            except KeyboardInterrupt:
-                print("\n  Stopping...")
-            finally:
-                cv2.destroyAllWindows()
-
+    except KeyboardInterrupt:
+        print("\n  Stopping...")
     finally:
+        cv2.destroyAllWindows()
         cap.release()
-        daemon_proc.terminate()
-        try:
-            daemon_proc.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            daemon_proc.kill()
-            daemon_proc.wait()
+        if mini:
+            try:
+                mini.__exit__(None, None, None)
+            except Exception:
+                pass
+        proc = daemon_result.get("proc")
+        if proc:
+            proc.terminate()
+            try:
+                proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
         print("  Done.")
 
 
