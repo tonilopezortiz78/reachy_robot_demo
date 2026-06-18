@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Voice model (61 MB — download separately, see README)
+voices/*.onnx
+
+# Music — copyrighted tracks stay local
+music/macarena.mp3
+
+# Generated/recorded files
+recordings/
+*.raw.wav
+*.log
+.env
