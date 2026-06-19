@@ -8,6 +8,11 @@ Same personality as demo_edge.py but tuned for natural turn-taking:
   - Barge-in: speak over the robot and it stops mid-sentence
   - High VAD threshold (0.75) during TTS — avoids self-trigger from speaker leak
   - 200 ms continuous trigger required to confirm barge-in
+  - LLM emits [gesture] markers for contextual HF emotion presets
+  - Auto "curious" tilt when the user asks a question
+  - Animator aliveness layer: background gestures + antenna random-walk
+
+Status: v1.0 — works great on hardware (validated 2026-06-19, NS demo).
 
 Pipeline:  Mic (Silero VAD) → Groq Whisper STT → Groq LLaMA → edge-tts → Robot
 """

@@ -50,10 +50,22 @@ def _s(amp, freq, t, phase=0.0):
 
 
 def _send(mini, p, y, r, by, ant_l, ant_r):
-    mini.set_target(
-        head=create_head_pose(pitch=p, yaw=y, roll=r, degrees=False),
-        antennas=[ant_l, ant_r], body_yaw=by,
-    )
+    # Safe envelope: clamp every axis to a range the IK solver can always
+    # satisfy. These limits are tighter than the SDK's hard limits so the
+    # combined (head + body + antennas) pose never self-collides.
+    p  = max(-0.30, min(0.30, p))
+    y  = max(-0.40, min(0.40, y))
+    r  = max(-0.25, min(0.25, r))
+    by = max(-0.30, min(0.30, by))
+    al = max(-0.70, min(0.70, ant_l))
+    ar = max(-0.70, min(0.70, ant_r))
+    try:
+        mini.set_target(
+            head=create_head_pose(pitch=p, yaw=y, roll=r, degrees=False),
+            antennas=[al, ar], body_yaw=by,
+        )
+    except Exception:
+        pass  # IK error — clamp didn't help; swallow and let next frame retry
 
 
 # ── Aliveness layer — random micro-gestures ───────────────────────────────────
@@ -217,10 +229,11 @@ class Animator:
     THINKING  = "thinking"
     SPEAKING  = "speaking"
 
-    def __init__(self, mini, moves_library=None, aliveness: bool = True):
+    def __init__(self, mini, moves_library=None, aliveness: bool = True, mirror: bool = False):
         self.mini      = mini
         self.state     = self.IDLE
         self.aliveness = aliveness
+        self.mirror    = mirror   # flip yaw/roll/body_yaw signs (viewer perspective)
         self._moves    = moves_library  # RecordedMoves HF library, optional
         self._gesture_active = False
         self._lock     = threading.Lock()
@@ -317,13 +330,13 @@ class Animator:
                     ar =  0.45 + _s(0.30, 1.80, t, phase=math.pi)
 
                 elif state == self.SPEAKING:
-                    # expressive talking — big head bobs, antennas flapping enthusiastically
+                    # expressive talking — head bobs + antenna flutter (kept inside IK envelope)
                     p  =  0.08 + _s(0.10, 0.50, t) + _s(0.04, 1.23, t)
-                    y  =  _s(0.26, 0.38, t) + _s(0.10, 0.87, t)
+                    y  =  _s(0.22, 0.38, t) + _s(0.08, 0.87, t)
                     r  =  _s(0.08, 0.27, t) + _s(0.03, 0.63, t)
-                    by =  _s(0.35, 0.22, t) + _s(0.10, 0.51, t)
-                    al =  0.40 + _s(0.35, 0.65, t)
-                    ar =  0.40 + _s(0.35, 0.65, t, phase=math.pi * 0.6)
+                    by =  _s(0.22, 0.22, t) + _s(0.07, 0.51, t)
+                    al =  0.30 + _s(0.30, 0.65, t)
+                    ar =  0.30 + _s(0.30, 0.65, t, phase=math.pi * 0.6)
 
                 else:
                     p = y = r = by = al = ar = 0.0
@@ -338,7 +351,10 @@ class Animator:
                     al += alo
                     ar += aro
 
-                _send(self.mini, p, y, r, by, al, ar)
+                if self.mirror:
+                    _send(self.mini, p, -y, -r, -by, al, ar)
+                else:
+                    _send(self.mini, p, y, r, by, al, ar)
                 consecutive_errors = 0
 
             except Exception:

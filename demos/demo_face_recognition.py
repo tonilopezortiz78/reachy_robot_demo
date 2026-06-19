@@ -54,6 +54,7 @@ CAM_W, CAM_H  = 640, 360
 RECOG_SCALE   = 0.5     # downsample frame for recognition speed
 TOLERANCE     = 0.52    # face distance threshold — lower = stricter
 GREET_COOLDOWN = 90.0   # seconds before re-greeting the same person
+RECOG_EVERY_N = 2       # run recognition every Nth frame; track in between
 
 # ── Head tracking ─────────────────────────────────────────────────────────────
 
@@ -154,8 +155,8 @@ def _synth_and_play(voice: PiperVoice, text: str):
              "-i", raw,
              "-af", (
                  f"asetrate={sr}*1.10,"
-                 "atempo=1.08,"
-                 "volume=2.0,"
+                 "atempo=1.20,"
+                 "volume=2.5,"
                  "vibrato=f=4.0:d=0.04,"
                  "aecho=0.88:0.90:16:0.30"
              ),
@@ -315,6 +316,7 @@ def main():
     last_results: list = []           # (box, name, confidence) per face
     greeted_at:   dict = {}           # name -> timestamp of last greeting
     greeted_unknown_at: float = 0.0   # timestamp of last "unknown visitor" greeting
+    frame_count = 0                   # for RECOG_EVERY_N frame skipping
 
     mini = None
 
@@ -336,8 +338,12 @@ def main():
                         continue
 
                     # ── Recognition ─────────────────────────────────────────
-                    frame_rgb  = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    last_results = identify(frame_rgb, known_encodings, known_names)
+                    # Run full recognition every Nth frame to keep FPS up;
+                    # tracking in between uses the last known face position.
+                    frame_count += 1
+                    if frame_count % RECOG_EVERY_N == 0:
+                        frame_rgb  = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        last_results = identify(frame_rgb, known_encodings, known_names)
 
                     # ── Tracking: use largest face ───────────────────────────
                     if last_results:
