@@ -25,7 +25,7 @@ from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
 
 VOICE_PATH      = "voices/en_US-amy-medium.onnx"
-SPEAKER         = "plughw:2,0"
+SPEAKER         = "plughw:CARD=Audio,DEV=0"
 WAV_RAW         = "/tmp/ns_welcome_raw.wav"
 WAV_FX          = "/tmp/ns_welcome_fx.wav"
 ROBOT_VOICE_FX  = True   # set False to hear unprocessed voice

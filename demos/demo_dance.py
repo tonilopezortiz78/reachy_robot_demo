@@ -23,7 +23,7 @@ from reachy_mini.utils import create_head_pose
 
 ROOT       = Path(__file__).parent.parent
 VOICE_PATH = str(ROOT / "voices" / "en_US-amy-medium.onnx")
-SPEAKER    = "plughw:2,0"
+SPEAKER    = "plughw:CARD=Audio,DEV=0"
 WAV_GREET  = "/tmp/ns_greeting.wav"
 WAV_TEASE  = "/tmp/ns_teaser.wav"
 

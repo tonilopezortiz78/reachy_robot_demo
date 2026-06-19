@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Control software for a **Reachy Mini Lite** (USB variant) robot from Pollen Robotics. The robot is a USB peripheral — three logical devices over one cable: motors (`/dev/ttyACM0`), speaker+mic (ALSA card 2, `plughw:2,0`), and camera (`/dev/video2`). **The laptop is the computer.** The Raspberry Pi inside the robot is only a USB-to-serial bridge for the Feetech motors.
+Control software for a **Reachy Mini Lite** (USB variant) robot from Pollen Robotics. The robot is a USB peripheral — three logical devices over one cable: motors (`/dev/ttyACM0`), speaker+mic (ALSA card 2, `plughw:CARD=Audio,DEV=0`), and camera (`/dev/video2`). **The laptop is the computer.** The Raspberry Pi inside the robot is only a USB-to-serial bridge for the Feetech motors.
 
 ## Running scripts
 
@@ -110,10 +110,10 @@ are in radians by default. Safe ranges: pitch/roll ±40°, yaw ±180°, body yaw
 
 ```python
 import subprocess
-subprocess.Popen(["aplay", "-D", "plughw:2,0", "-q", wav_path])
+subprocess.Popen(["aplay", "-D", "plughw:CARD=Audio,DEV=0", "-q", wav_path])
 ```
 
-`plughw:2,0` goes direct to the robot's USB speaker, bypassing PipeWire/PulseAudio. Never route through PulseAudio sinks for the robot — the routing is fragile and goes to whichever device PipeWire chooses as default.
+`plughw:CARD=Audio,DEV=0` goes direct to the robot's USB speaker, bypassing PipeWire/PulseAudio. Never route through PulseAudio sinks for the robot — the routing is fragile and goes to whichever device PipeWire chooses as default.
 
 TTS is done with Piper (`voices/en_US-amy-medium.onnx`):
 

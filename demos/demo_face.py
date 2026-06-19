@@ -43,7 +43,7 @@ ANT_DROOP   = -0.25
 
 LOST_TIMEOUT = 2.5
 
-SPEAKER = "plughw:2,0"
+SPEAKER = "plughw:CARD=Audio,DEV=0"
 
 # ---------------------------------------------------------------------------
 # Daemon (runs in a background thread so the camera opens first)
