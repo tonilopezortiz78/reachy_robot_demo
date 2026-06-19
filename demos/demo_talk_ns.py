@@ -142,7 +142,7 @@ NS Principles:
 - For off-topic things (sports, food, etc.) say you don't know much, then bring it back to tech or NS.
 - Be funny when appropriate — André would approve. Short jokes land better than long ones.
 - Never be verbose. Short and cute always wins. 1-3 sentences maximum.
-- CRITICAL: Never use markdown, asterisks, bullet points, bold, italic, or any formatting. Plain spoken words only — this is voice output.\
+- CRITICAL: Never use asterisks in any form. No *beep*, no *smile*, no **bold**, no *italic*, no action markers, no emotes. Zero asterisks. This is voice — only say words that should be spoken aloud.\
 """
 
 # ── Daemon ───────────────────────────────────────────────────────────────────
@@ -381,8 +381,13 @@ def transcribe(client, pcm: bytes) -> str:
 # ── Text cleaning ─────────────────────────────────────────────────────────────
 
 def clean_for_tts(text: str) -> str:
-    """Strip markdown that TTS would read as literal symbols."""
-    text = re.sub(r'\*+', '', text)                          # ** * ***
+    """Strip markdown and roleplay emotes that TTS would read as literal symbols."""
+    # Remove roleplay action/emote markers entirely — *beep*, *smile*, *blush*, etc.
+    # These are single-word (no spaces) wrapped in 1-3 asterisks. Remove word too.
+    text = re.sub(r'\*{1,3}\w+\*{1,3}', '', text)
+    # Strip remaining asterisks from bold/italic (**text** → text, *text* → text)
+    text = re.sub(r'\*+([^*]+)\*+', r'\1', text)
+    text = re.sub(r'\*+', '', text)
     text = re.sub(r'_+', '', text)                           # __ _
     text = re.sub(r'`+', '', text)                           # ` ``
     text = re.sub(r'#+\s*', '', text)                        # ## headings
