@@ -27,7 +27,7 @@ try:
         prob = vad(torch.from_numpy(f32), RATE).item()
         db = 20 * np.log10(np.sqrt(np.mean(f32 ** 2)) + 1e-10)
         bar = "#" * int(prob * 40)
-        tag = "SPEECH" if prob > 0.45 else "      "
+        tag = "SPEECH" if prob > 0.25 else "      "
         print(f"  {tag}  prob={prob:.2f}  dBFS={db:+.1f}  |{bar:<40}|")
 except KeyboardInterrupt:
     pass

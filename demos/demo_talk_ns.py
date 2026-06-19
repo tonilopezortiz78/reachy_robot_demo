@@ -57,7 +57,7 @@ if not GROQ_KEY:
 
 MIC_RATE       = 16000
 VAD_CHUNK      = 512          # 32 ms per chunk — Silero's native size
-SPEECH_THRESH  = 0.45         # VAD confidence threshold
+SPEECH_THRESH  = 0.25         # VAD confidence threshold (low for camera MEMS mic)
 SILENCE_END_MS = 1400          # ms of silence → end of utterance (VADIterator internal)
 TAIL_FRAMES    = 18           # extra chunks (~576ms) collected after "end" detected
 MIN_SPEECH_S   = 0.4          # ignore very short blips (< 400 ms)

@@ -59,7 +59,7 @@ if not GROQ_KEY:
 
 MIC_RATE       = 16000
 VAD_CHUNK      = 512
-SPEECH_THRESH  = 0.45
+SPEECH_THRESH  = 0.25         # low for camera MEMS mic
 SILENCE_END_MS = 1400
 TAIL_FRAMES    = 18
 MIN_SPEECH_S   = 0.4
