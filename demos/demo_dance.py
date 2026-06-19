@@ -22,6 +22,7 @@ from reachy_mini.utils import create_head_pose
 from reachy_demo.daemon import start_daemon, stop_daemon
 from reachy_demo.tts_edge import synth_to_file
 
+ROOT    = Path(__file__).parent.parent
 SPEAKER = "plughw:CARD=Audio,DEV=0"
 
 # ── Music ─────────────────────────────────────────────────────────────────
