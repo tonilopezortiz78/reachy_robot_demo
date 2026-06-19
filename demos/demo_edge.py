@@ -12,6 +12,7 @@ Run:  ./run.sh demos/demo_edge.py
 Press Ctrl-C to stop.
 """
 import asyncio
+import concurrent.futures
 import io
 import math
 import os
@@ -296,37 +297,45 @@ def clean_for_tts(text: str) -> str:
     return text
 
 # ── edge-tts synthesis ────────────────────────────────────────────────────────
+# A single asyncio event loop runs in a background thread for the lifetime of
+# the process. All edge-tts calls are submitted to it via run_coroutine_threadsafe,
+# which reuses the underlying TLS connection instead of re-handshaking per sentence.
+
+import edge_tts as _edge_tts_mod  # import once at module level
+
+_tts_loop   = asyncio.new_event_loop()
+_tts_thread = threading.Thread(target=_tts_loop.run_forever, daemon=True)
+_tts_thread.start()
+
 
 def _is_chinese(text: str) -> bool:
     cjk = sum(1 for c in text if '一' <= c <= '鿿')
     return cjk > max(2, len(text) * 0.15)
 
-async def _edge_synth(text: str, mp3_path: str, voice: str, rate: str = "-5%"):
-    import edge_tts
-    tts = edge_tts.Communicate(text, voice=voice, rate=rate)
+
+async def _edge_synth_coro(text: str, mp3_path: str, voice: str, rate: str):
+    tts = _edge_tts_mod.Communicate(text, voice=voice, rate=rate)
     await asyncio.wait_for(tts.save(mp3_path), timeout=10.0)
 
+
 def _synth_to_file(text: str) -> str:
-    """Synthesise via edge-tts → apply light robot FX → return WAV path. Caller must delete."""
+    """Synthesise via edge-tts → resample to 48kHz → return WAV path. Caller must delete."""
     mp3 = tempfile.mktemp(suffix=".mp3")
     out = tempfile.mktemp(suffix=".wav")
+    if _is_chinese(text):
+        voice, rate, vol = CHINESE_VOICE, "-18%", "2.2"
+    else:
+        voice, rate, vol = ENGLISH_VOICE, "-8%", "2.0"
     try:
-        if _is_chinese(text):
-            asyncio.run(_edge_synth(text, mp3, CHINESE_VOICE, rate="-18%"))
-            # High-quality resample for Chinese tonal clarity
-            af = "aresample=resampler=swr:out_sample_rate=48000,volume=2.2"
-        else:
-            asyncio.run(_edge_synth(text, mp3, ENGLISH_VOICE, rate="-5%"))
-            # Light robot FX: subtle echo + vibrato to keep the robot character
-            af = (
-                "aresample=resampler=swr:out_sample_rate=48000,"
-                "volume=2.0,"
-                "vibrato=f=3.5:d=0.02,"
-                "aecho=0.90:0.85:18:0.20"
-            )
+        future = asyncio.run_coroutine_threadsafe(
+            _edge_synth_coro(text, mp3, voice, rate), _tts_loop
+        )
+        future.result(timeout=12.0)
         subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-             "-i", mp3, "-af", af, out],
+             "-i", mp3,
+             "-af", f"aresample=resampler=swr:out_sample_rate=48000,volume={vol}",
+             out],
             check=True,
         )
     finally:
@@ -411,7 +420,10 @@ def transcribe(client, pcm: bytes) -> str:
     )
     return transcription.strip()
 
-# ── Streaming LLM → speak ─────────────────────────────────────────────────────
+# ── LLM → speak (pipelined) ───────────────────────────────────────────────────
+# Collects all sentences from the LLM stream, then synthesises and plays them
+# with a 1-ahead pipeline: sentence N+1 is being synthesised in a background
+# thread while sentence N is playing, so inter-sentence gaps are near zero.
 
 def stream_and_speak(client, history: list, user_text: str, anim) -> str:
     history.append({"role": "user", "content": user_text})
@@ -424,47 +436,59 @@ def stream_and_speak(client, history: list, user_text: str, anim) -> str:
         stream=True,
     )
 
-    buffer    = ""
+    # ── Phase 1: collect sentences from LLM stream ──
+    sentences = []
     full_text = ""
-    wavs      = []
-    spoke     = False
-
+    buffer    = ""
     SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
 
+    for chunk in stream:
+        delta      = chunk.choices[0].delta.content or ""
+        buffer    += delta
+        full_text += delta
+        parts = SENTENCE_END.split(buffer)
+        if len(parts) > 1:
+            for s in parts[:-1]:
+                s = clean_for_tts(s)
+                if s:
+                    sentences.append(s)
+            buffer = parts[-1]
+    remaining = clean_for_tts(buffer)
+    if remaining:
+        sentences.append(remaining)
+
+    if not sentences:
+        full_text = full_text.strip()
+        history.append({"role": "assistant", "content": full_text})
+        return full_text
+
+    # ── Phase 2: pipeline synthesis behind playback ──
+    # sentence[i+1] synthesises in background while sentence[i] plays.
+    wavs = []
+    spoke = False
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
     try:
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
-            buffer    += delta
-            full_text += delta
+        next_future = pool.submit(_synth_to_file, sentences[0])
 
-            parts = SENTENCE_END.split(buffer)
-            if len(parts) > 1:
-                for sentence in parts[:-1]:
-                    sentence = clean_for_tts(sentence)
-                    if not sentence:
-                        continue
-                    anim.set_state(Animator.SPEAKING)
-                    if not spoke:
-                        speaking_chime()
-                        spoke = True
-                    wav = _synth_to_file(sentence)
-                    wavs.append(wav)
-                    _play_wav_blocking(wav)
-                buffer = parts[-1]
+        for i, _ in enumerate(sentences):
+            wav = next_future.result()      # wait for this sentence's WAV
+            wavs.append(wav)
 
-        remaining = clean_for_tts(buffer)
-        if remaining:
+            if i + 1 < len(sentences):     # pre-synthesise next while we play
+                next_future = pool.submit(_synth_to_file, sentences[i + 1])
+
             anim.set_state(Animator.SPEAKING)
             if not spoke:
                 speaking_chime()
-            wav = _synth_to_file(remaining)
-            wavs.append(wav)
+                spoke = True
             _play_wav_blocking(wav)
 
         full_text = full_text.strip()
         history.append({"role": "assistant", "content": full_text})
         return full_text
     finally:
+        pool.shutdown(wait=False)
         for w in wavs:
             Path(w).unlink(missing_ok=True)
 
