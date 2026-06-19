@@ -19,7 +19,9 @@ client = Groq(api_key=key)
 
 MIC = "plughw:CARD=Camera,DEV=0"
 
-print("Recording 5 seconds — speak now...")
+SPEAKER = "plughw:CARD=Audio,DEV=0"
+
+print("Recording 5 seconds — speak into the robot camera mic now...")
 wav = tempfile.mktemp(suffix=".wav")
 subprocess.run(
     ["arecord", "-D", MIC, "-f", "S16_LE", "-r", "16000", "-c", "1", "-d", "5", wav],
@@ -27,14 +29,29 @@ subprocess.run(
 )
 
 size = Path(wav).stat().st_size
-print(f"Captured {size} bytes. Sending to Whisper...")
+print(f"Captured {size} bytes.")
 
+# Show volume level
+result = subprocess.run(
+    ["ffmpeg", "-i", wav, "-af", "volumedetect", "-f", "null", "/dev/null"],
+    capture_output=True, text=True,
+)
+for line in result.stderr.splitlines():
+    if "max_volume" in line or "mean_volume" in line:
+        print(" ", line.strip())
+
+# Play back so you can hear what the mic recorded
+print("Playing back on robot speaker...")
+subprocess.run(["aplay", "-D", SPEAKER, "-q", wav], check=False)
+
+# Transcribe
+print("Sending to Whisper...")
 with open(wav, "rb") as f:
-    result = client.audio.transcriptions.create(
+    trans = client.audio.transcriptions.create(
         model="whisper-large-v3-turbo",
         file=("audio.wav", f),
         language="en",
     )
 
 Path(wav).unlink(missing_ok=True)
-print(f"\nWhisper heard: {result.text!r}")
+print(f"\nWhisper heard: {trans.text!r}")
