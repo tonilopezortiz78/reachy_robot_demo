@@ -13,19 +13,22 @@ Voice processing:
   the raw Piper voice.
 """
 import math
+import os
+import socket
 import subprocess
 import time
 import wave
-from pathlib import Path
 
+from piper import PiperVoice
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
 
-from reachy_demo.daemon import start_daemon, stop_daemon
-from reachy_demo.tts_edge import synth_to_file
-
-SPEAKER = "plughw:CARD=Audio,DEV=0"
+VOICE_PATH      = "voices/en_US-amy-medium.onnx"
+SPEAKER         = "plughw:CARD=Audio,DEV=0"
+WAV_RAW         = "/tmp/ns_welcome_raw.wav"
+WAV_FX          = "/tmp/ns_welcome_fx.wav"
+ROBOT_VOICE_FX  = True   # set False to hear unprocessed voice
 
 GREETING = (
     "Welcome... to Network School! "
@@ -95,15 +98,57 @@ def ready_blip():
 
 
 # ---------------------------------------------------------------------------
-# TTS
+# TTS + voice effect
 # ---------------------------------------------------------------------------
 
-def synth(text: str):
-    """Synthesise text via edge-tts. Returns (duration_s, wav_path)."""
-    path = synth_to_file(text)
-    with wave.open(path) as wf:
-        duration = wf.getnframes() / wf.getframerate()
-    return duration, path
+def synth(text: str, raw_path: str, fx_path: str, apply_fx: bool) -> float:
+    """
+    Render text → WAV via Piper, optionally add robotic effect, return duration.
+
+    Effect chain: vibrato (gentle mechanical wobble) + quick metallic echo.
+    This makes the voice sound AI/robot without destroying intelligibility.
+    """
+    voice = PiperVoice.load(VOICE_PATH)
+    with wave.open(raw_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(voice.config.sample_rate)
+        for chunk in voice.synthesize(text):
+            wf.writeframes(chunk.audio_int16_bytes)
+
+    if apply_fx:
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-y", "-i", raw_path,
+             "-af", "volume=1.5,vibrato=f=6:d=0.025,aecho=0.8:0.9:4:0.28",
+             fx_path],
+            check=True,
+        )
+        out = fx_path
+    else:
+        out = raw_path
+
+    with wave.open(out) as wf:
+        return wf.getnframes() / wf.getframerate(), out
+
+
+# ---------------------------------------------------------------------------
+# Daemon
+# ---------------------------------------------------------------------------
+
+def start_daemon():
+    proc = subprocess.Popen(
+        ["reachy-mini-daemon", "--no-media"],
+        start_new_session=True,
+    )
+    for _ in range(30):
+        time.sleep(0.5)
+        try:
+            with socket.create_connection(("127.0.0.1", 8000), timeout=0.3):
+                return proc
+        except OSError:
+            pass
+    raise RuntimeError("Daemon did not start within 15 s")
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +244,8 @@ def main():
     print("Network School Greeter")
 
     print("  Generating speech...")
-    audio_duration, audio_path = synth(GREETING)
-    print(f"  Audio: {audio_duration:.1f} s")
+    audio_duration, audio_path = synth(GREETING, WAV_RAW, WAV_FX, ROBOT_VOICE_FX)
+    print(f"  Audio: {audio_duration:.1f} s  (robot-fx={'on' if ROBOT_VOICE_FX else 'off'})")
 
     print("  >>> RECORD CUE: 3 beeps — hit record now! <<<")
     record_cue()
@@ -215,6 +260,7 @@ def main():
 
     print("  Starting daemon...")
     daemon_proc = start_daemon()
+    print("  Daemon ready.")
 
     try:
         emotions = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
@@ -249,8 +295,12 @@ def main():
             print("  Done.")
 
     finally:
-        Path(audio_path).unlink(missing_ok=True)
-        stop_daemon(daemon_proc)
+        daemon_proc.terminate()
+        try:
+            daemon_proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            daemon_proc.kill()
+            daemon_proc.wait()
 
 
 if __name__ == "__main__":

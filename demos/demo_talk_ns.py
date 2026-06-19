@@ -36,9 +36,6 @@ from reachy_demo.tts_piper import load_voice, synth_to_file
 ROOT       = Path(__file__).parent.parent
 VOICE_PATH = str(ROOT / "voices" / "en_US-amy-medium.onnx")
 
-WAKE_WORDS     = {"reachy", "reachie", "reach"}
-ACTIVE_TIMEOUT = 90.0   # seconds of silence before going back to sleep
-
 GROQ_KEY = load_api_key(ROOT)
 if not GROQ_KEY:
     sys.exit("ERROR: GROQ_API_KEY not found in .env or environment")
@@ -222,9 +219,6 @@ def stream_and_speak(client, voice, history: list, user_text: str, anim) -> str:
 
         full_text = full_text.strip()
         history.append({"role": "assistant", "content": full_text})
-        # Rolling window — prevent unbounded growth across a long event
-        if len(history) > 8:
-            history[:] = history[-8:]
         return full_text
     finally:
         for w in wavs:
@@ -266,21 +260,17 @@ def main():
             your_turn_chime()
             print("  [ YOUR TURN → ]", flush=True)
 
-            active          = False
-            last_speak_t    = 0.0
-            history         = []
-            print("\n  Say 'Hey Reachy' to start  |  Ctrl-C to stop\n")
+            history = []
+            print("\n  Ctrl-C to stop\n")
 
             try:
                 while True:
+                    # ── Listen ──────────────────────────────────────────
                     anim.set_state(Animator.LISTENING)
                     pcm = record_utterance(vad_model)
 
                     if pcm is None:
-                        if active and (time.time() - last_speak_t) > ACTIVE_TIMEOUT:
-                            active = False
-                            print("  [ sleeping — say 'Hey Reachy' to wake ]")
-                            anim.set_state(Animator.IDLE)
+                        anim.set_state(Animator.IDLE)
                         continue
 
                     # ── Transcribe ──────────────────────────────────────
@@ -298,22 +288,9 @@ def main():
                         anim.set_state(Animator.IDLE)
                         continue
 
-                    # ── Wake word gate ───────────────────────────────────
-                    if not active:
-                        if any(w in text.lower() for w in WAKE_WORDS):
-                            active = True
-                            last_speak_t = time.time()
-                            print(f"  [ wake: {text!r} → active ]")
-                            speaking_chime()
-                            # short acknowledgment, then fall through to full reply below
-                        else:
-                            anim.set_state(Animator.IDLE)
-                            continue
-
-                    last_speak_t = time.time()
                     print(f"  You:   {text}")
 
-                    # ── Stream LLM → speak ──────────────────────────────
+                    # ── Stream LLM → speak sentence by sentence ──────────
                     try:
                         anim.set_state(Animator.THINKING)
                         thinking_blips()
@@ -325,8 +302,8 @@ def main():
                         continue
 
                     print(f"  Reachy: {reply}")
-                    last_speak_t = time.time()
 
+                    # ── "Your turn" signal ───────────────────────────────
                     anim.set_state(Animator.IDLE)
                     time.sleep(0.15)
                     your_turn_chime()

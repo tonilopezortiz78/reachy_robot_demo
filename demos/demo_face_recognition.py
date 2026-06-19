@@ -15,9 +15,12 @@ Press q in the preview window or Ctrl-C to stop.
 """
 
 import random
+import socket
 import subprocess
+import tempfile
 import threading
 import time
+import wave
 from pathlib import Path
 
 import cv2
@@ -32,16 +35,16 @@ except ImportError:
         "(Needs cmake and dlib — both already present on this machine.)"
     )
 
+from piper import PiperVoice
+
 from reachy_mini import ReachyMini
 from reachy_mini.utils import create_head_pose
-
-from reachy_demo.daemon import start_daemon, stop_daemon
-from reachy_demo.tts_edge import synth_to_file, play_wav_blocking
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 ROOT       = Path(__file__).parent.parent
 FACES_DIR  = ROOT / "faces"
+VOICE_PATH = str(ROOT / "voices" / "en_US-amy-medium.onnx")
 SPEAKER    = "plughw:CARD=Audio,DEV=0"
 CAM_DEV    = "/dev/video2"
 
@@ -117,17 +120,61 @@ def load_roster() -> tuple[list, list]:
     print(f"  [roster] {len(set(names))} people, {len(encodings)} reference encodings")
     return encodings, names
 
+# ── Daemon ────────────────────────────────────────────────────────────────────
+
+def start_daemon():
+    subprocess.run(["pkill", "-9", "-f", "reachy-mini-daemon"], check=False)
+    time.sleep(0.3)
+    proc = subprocess.Popen(
+        ["reachy-mini-daemon", "--no-media"], start_new_session=True,
+    )
+    for _ in range(30):
+        time.sleep(0.5)
+        try:
+            with socket.create_connection(("127.0.0.1", 8000), timeout=0.3):
+                return proc
+        except OSError:
+            pass
+    raise RuntimeError("Daemon did not start within 15 s")
+
 # ── TTS ───────────────────────────────────────────────────────────────────────
 
-def _synth_and_play(text: str):
-    """Synthesise text via edge-tts and play on robot speaker."""
-    wav = synth_to_file(text)
-    play_wav_blocking(wav)
-    Path(wav).unlink(missing_ok=True)
+def _synth_and_play(voice: PiperVoice, text: str):
+    """Synthesise text with Piper + FX chain and play on robot speaker."""
+    sr  = voice.config.sample_rate
+    raw = tempfile.mktemp(suffix=".raw.wav")
+    out = tempfile.mktemp(suffix=".wav")
+    try:
+        with wave.open(raw, "wb") as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+            for chunk in voice.synthesize(text):
+                wf.writeframes(chunk.audio_int16_bytes)
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-i", raw,
+             "-af", (
+                 f"asetrate={sr}*1.10,"
+                 "atempo=1.08,"
+                 "volume=2.0,"
+                 "vibrato=f=4.0:d=0.04,"
+                 "aecho=0.88:0.90:16:0.30"
+             ),
+             out],
+            check=True,
+        )
+        finally_path = Path(raw)  # raw cleaned in finally below
+        proc = subprocess.Popen(
+            ["aplay", "-D", SPEAKER, "-q", out],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        proc.wait()
+    finally:
+        Path(raw).unlink(missing_ok=True)
+        Path(out).unlink(missing_ok=True)
 
-def greet_async(text: str):
+def greet_async(voice: PiperVoice, text: str):
     """Fire-and-forget TTS in a background thread so tracking loop is not blocked."""
-    t = threading.Thread(target=_synth_and_play, args=(text,), daemon=True)
+    t = threading.Thread(target=_synth_and_play, args=(voice, text), daemon=True)
     t.start()
 
 # ── Sound FX ──────────────────────────────────────────────────────────────────
@@ -232,6 +279,9 @@ def draw_overlay(frame, face_results, fps, robot_ready, face_seen):
 
 def main():
     print("Face Recognition Demo")
+    print("  Loading voice...")
+    voice = PiperVoice.load(VOICE_PATH)
+
     print("  Loading face roster...")
     known_encodings, known_names = load_roster()
     if not known_encodings:
@@ -319,13 +369,13 @@ def main():
                                 if now - last_t > GREET_COOLDOWN:
                                     text = random.choice(KNOWN_GREETINGS).format(name=name)
                                     print(f"  Greeting: {text}")
-                                    greet_async(text)
+                                    greet_async(voice, text)
                                     greeted_at[name] = now
                             else:
                                 if now - greeted_unknown_at > GREET_COOLDOWN:
                                     text = random.choice(UNKNOWN_GREETINGS)
                                     print(f"  Greeting: {text}")
-                                    greet_async(text)
+                                    greet_async(voice, text)
                                     greeted_unknown_at = now
 
                     else:
@@ -377,7 +427,12 @@ def main():
     finally:
         cv2.destroyAllWindows()
         cap.release()
-        stop_daemon(daemon_proc)
+        daemon_proc.terminate()
+        try:
+            daemon_proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            daemon_proc.kill()
+            daemon_proc.wait()
         print("  Done.")
 
 

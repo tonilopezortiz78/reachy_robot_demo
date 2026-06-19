@@ -10,20 +10,22 @@ Body sweeps up to ±1.4 rad (80°). Jump move: slow push-down → fast snap-up.
 Run:  ./run.sh demos/demo_dance.py
 """
 import math
+import socket
 import subprocess
 import time
-import wave as _wave
+import wave
 from pathlib import Path
 
+from piper import PiperVoice
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
 
-from reachy_demo.daemon import start_daemon, stop_daemon
-from reachy_demo.tts_edge import synth_to_file
-
-ROOT    = Path(__file__).parent.parent
-SPEAKER = "plughw:CARD=Audio,DEV=0"
+ROOT       = Path(__file__).parent.parent
+VOICE_PATH = str(ROOT / "voices" / "en_US-amy-medium.onnx")
+SPEAKER    = "plughw:CARD=Audio,DEV=0"
+WAV_GREET  = "/tmp/ns_greeting.wav"
+WAV_TEASE  = "/tmp/ns_teaser.wav"
 
 # ── Music ─────────────────────────────────────────────────────────────────
 # Swap this one line to use any MP3 from the music/ folder.
@@ -76,9 +78,44 @@ def excited_chirp():
     time.sleep(0.04)
     chirp(800, 2200, 0.12, vol=0.85)
 
-def _wav_duration(path: str) -> float:
-    with _wave.open(path) as wf:
+# ---------------------------------------------------------------------------
+# TTS
+# ---------------------------------------------------------------------------
+
+def synth(text, path):
+    voice = PiperVoice.load(VOICE_PATH)
+    raw = path + ".raw.wav"
+    with wave.open(raw, "wb") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2)
+        wf.setframerate(voice.config.sample_rate)
+        for chunk in voice.synthesize(text):
+            wf.writeframes(chunk.audio_int16_bytes)
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-i", raw,
+         "-af", "volume=1.5,vibrato=f=6:d=0.025,aecho=0.8:0.9:4:0.28",
+         path],
+        check=True,
+    )
+    with wave.open(path) as wf:
         return wf.getnframes() / wf.getframerate()
+
+# ---------------------------------------------------------------------------
+# Daemon
+# ---------------------------------------------------------------------------
+
+def start_daemon():
+    proc = subprocess.Popen(
+        ["reachy-mini-daemon", "--no-media"], start_new_session=True,
+    )
+    for _ in range(30):
+        time.sleep(0.5)
+        try:
+            with socket.create_connection(("127.0.0.1", 8000), timeout=0.3):
+                return proc
+        except OSError:
+            pass
+    raise RuntimeError("Daemon did not start within 15 s")
 
 # ---------------------------------------------------------------------------
 # Greeting animation (layered sine waves — looks organic)
@@ -225,10 +262,8 @@ def main():
     print("Network School — Macarena Show")
 
     print("  Generating speech...")
-    WAV_GREET = synth_to_file(GREETING)
-    WAV_TEASE = synth_to_file(TEASER)
-    greet_dur = _wav_duration(WAV_GREET)
-    tease_dur = _wav_duration(WAV_TEASE)
+    greet_dur = synth(GREETING, WAV_GREET)
+    tease_dur = synth(TEASER,   WAV_TEASE)
     print(f"  Greeting: {greet_dur:.1f}s   Teaser: {tease_dur:.1f}s")
 
     print("\n  >>> RECORD CUE — hit record! <<<")
@@ -294,9 +329,12 @@ def main():
             print("  Show complete!")
 
     finally:
-        Path(WAV_GREET).unlink(missing_ok=True)
-        Path(WAV_TEASE).unlink(missing_ok=True)
-        stop_daemon(daemon_proc)
+        daemon_proc.terminate()
+        try:
+            daemon_proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            daemon_proc.kill()
+            daemon_proc.wait()
 
 
 if __name__ == "__main__":
