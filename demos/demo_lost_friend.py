@@ -2,15 +2,18 @@
 demo_lost_friend.py — NS Robotics Club Pitch
 =============================================
 Reachy tells the story of looking for a home at Network School,
-and the day he lost his robot friend Pixel.
+and the day he lost his robot brother Pixel.
 
-Designed to melt hearts and sell the idea of an NS Robotics Club.
+WAV files are cached in audio/lost_friend/ — synthesis only runs once.
+Delete that folder (or pass --regen) to rebuild the voice.
 
 Run:  ./run.sh demos/demo_lost_friend.py
+      ./run.sh demos/demo_lost_friend.py --regen   # force re-synthesise
 """
 import math
 import socket
 import subprocess
+import sys
 import time
 import wave
 from pathlib import Path
@@ -23,9 +26,12 @@ from reachy_mini.utils import create_head_pose
 ROOT       = Path(__file__).parent.parent
 VOICE_PATH = str(ROOT / "voices" / "en_US-amy-medium.onnx")
 SPEAKER    = "plughw:CARD=Audio,DEV=0"
+AUDIO_DIR  = ROOT / "audio" / "lost_friend"   # persistent cache
+
+REGEN = "--regen" in sys.argv
 
 # ---------------------------------------------------------------------------
-# Script — five emotional segments
+# Script
 # ---------------------------------------------------------------------------
 
 LINES = {
@@ -64,8 +70,6 @@ LINES = {
     ),
 }
 
-WAV = {k: f"/tmp/ns_{k}.wav" for k in LINES}
-
 # ---------------------------------------------------------------------------
 # Daemon
 # ---------------------------------------------------------------------------
@@ -84,205 +88,220 @@ def start_daemon():
     raise RuntimeError("Daemon did not start within 15 s")
 
 # ---------------------------------------------------------------------------
-# Voice — cute sad robot
-# Pitch up 12% (sounds younger), slow 11% (more emotional),
-# heavy vibrato wobble (struggling to hold it together),
-# long reverb (alone in a big space).
+# Voice synthesis — cached to audio/lost_friend/
 # ---------------------------------------------------------------------------
 
-def synth(key, text):
+def wav_path(key):
+    return AUDIO_DIR / f"{key}.wav"
+
+def needs_synth():
+    if REGEN:
+        return True
+    return not all(wav_path(k).exists() for k in LINES)
+
+def synth_all():
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     voice = PiperVoice.load(VOICE_PATH)
     sr    = voice.config.sample_rate
-    raw   = WAV[key] + ".raw.wav"
-    with wave.open(raw, "wb") as wf:
-        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
-        for chunk in voice.synthesize(text):
-            wf.writeframes(chunk.audio_int16_bytes)
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-i", raw,
-         "-af", (
-             f"asetrate={sr}*1.12,"   # pitch up — sounds younger/cuter
-             "atempo=0.89,"            # slow down — emotional pacing
-             "volume=2.2,"
-             "vibrato=f=4.2:d=0.08,"  # strong wobble — struggling with feelings
-             "aecho=0.88:0.92:28:0.55" # long lonely echo
-         ),
-         WAV[key]],
-        check=True,
-    )
-    with wave.open(WAV[key]) as wf:
-        return wf.getnframes() / wf.getframerate()
+    durations = {}
+    for key, text in LINES.items():
+        print(f"    synthesising '{key}'...")
+        raw = str(wav_path(key)) + ".raw.wav"
+        with wave.open(raw, "wb") as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+            for chunk in voice.synthesize(text):
+                wf.writeframes(chunk.audio_int16_bytes)
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-i", raw,
+             "-af", (
+                 f"asetrate={sr}*1.12,"
+                 "atempo=0.89,"
+                 "volume=2.2,"
+                 "vibrato=f=4.2:d=0.08,"
+                 "aecho=0.88:0.92:28:0.55"
+             ),
+             str(wav_path(key))],
+            check=True,
+        )
+        Path(raw).unlink(missing_ok=True)
+        with wave.open(str(wav_path(key))) as wf:
+            durations[key] = wf.getnframes() / wf.getframerate()
+        print(f"    {key}: {durations[key]:.1f}s  ✓")
+    return durations
+
+def load_durations():
+    d = {}
+    for k in LINES:
+        with wave.open(str(wav_path(k))) as wf:
+            d[k] = wf.getnframes() / wf.getframerate()
+    return d
 
 # ---------------------------------------------------------------------------
 # Sound effects
 # ---------------------------------------------------------------------------
 
-def _play_async(expr, dur, vol=0.5):
-    return subprocess.Popen(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", f"aevalsrc={expr}*{vol}:c=mono:s=22050",
-         "-t", str(dur), "-f", "alsa", SPEAKER],
-    )
+def _beep(expr, dur, vol=0.5, block=False):
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+           "-f", "lavfi", "-i", f"aevalsrc={expr}*{vol}:c=mono:s=22050",
+           "-t", str(dur), "-f", "alsa", SPEAKER]
+    if block:
+        subprocess.run(cmd, check=False)
+    else:
+        subprocess.Popen(cmd)
+
+def chirp(f0, f1, dur, vol=0.55, block=True):
+    _beep(f"sin(2*PI*({f0}*t+({f1}-{f0})*t*t/(2*{dur})))", dur, vol, block)
+
+def blip(freq, dur=0.07, vol=0.45, block=True):
+    _beep(f"sin(2*PI*{freq}*t)*exp(-t*8)", dur, vol, block)
 
 def sad_chirp():
-    """Descending chirp — like a little robot sigh."""
-    _play_async("sin(2*PI*(700-500*t)*t)", 0.45, vol=0.35)
+    chirp(680, 180, 0.50, vol=0.32, block=False)
 
 def sniff():
-    """Tiny robot sniffle — decaying breath noise."""
-    _play_async("sin(2*PI*320*t)*exp(-t*9)+sin(2*PI*180*t)*exp(-t*14)", 0.28, vol=0.28)
+    _beep("sin(2*PI*310*t)*exp(-t*9)+sin(2*PI*170*t)*exp(-t*13)", 0.25, 0.26, block=False)
+
+def thinking_beeps():
+    """Little blips — robot processing emotions."""
+    for f in [880, 660, 440]:
+        blip(f, 0.06, 0.30, block=True)
+        time.sleep(0.04)
+
+def sad_beeps():
+    """Descending sad scale — 3 falling notes."""
+    for f in [700, 520, 340]:
+        blip(f, 0.10, 0.28, block=True)
+        time.sleep(0.09)
 
 def hopeful_chime():
-    """Two gentle rising tones — a tiny spark of hope."""
-    _play_async("sin(2*PI*520*t)*exp(-t*3)", 0.35, vol=0.30)
-    time.sleep(0.4)
-    _play_async("sin(2*PI*780*t)*exp(-t*3)", 0.35, vol=0.25)
+    blip(520, 0.30, 0.28, block=True)
+    time.sleep(0.18)
+    blip(780, 0.30, 0.22, block=True)
 
 def record_cue():
     for _ in range(3):
-        subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-f", "lavfi", "-i", "aevalsrc=sin(2*PI*(600+400*t)*t)*0.7:c=mono:s=22050",
-             "-t", "0.12", "-f", "alsa", SPEAKER], check=False,
-        )
-        time.sleep(0.6)
+        chirp(600, 1000, 0.12, vol=0.75, block=True)
+        time.sleep(0.55)
 
 def boot_beeps():
-    for f, d in [(300, 0.14), (550, 0.10), (820, 0.16), (1100, 0.08)]:
-        subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-f", "lavfi", "-i", f"aevalsrc=sin(2*PI*{f}*t)*0.45:c=mono:s=22050",
-             "-t", str(d), "-f", "alsa", SPEAKER], check=False,
-        )
-        time.sleep(0.05)
+    for f, d in [(300, 0.12), (480, 0.09), (700, 0.13), (950, 0.07), (1200, 0.06)]:
+        blip(f, d, 0.40, block=True)
+        time.sleep(0.04)
 
 # ---------------------------------------------------------------------------
-# Animation helpers
+# Animation
 # ---------------------------------------------------------------------------
 
-def _sin(amp, freq, t, phase=0.0):
+def _s(amp, freq, t, phase=0.0):
     return amp * math.sin(2 * math.pi * freq * t + phase)
 
-def play_audio(path):
+def play_audio(key):
     return subprocess.Popen(
-        ["aplay", "-D", SPEAKER, "-q", path],
+        ["aplay", "-D", SPEAKER, "-q", str(wav_path(key))],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
-def animate(mini, wav_key, style_fn, dt=0.05):
-    """Play audio and call style_fn(t) → (pitch,yaw,roll,body,ant) each frame."""
-    proc = play_audio(WAV[wav_key])
+def animate(mini, key, style_fn, dt=0.05):
+    proc = play_audio(key)
     t0 = time.time()
     while proc.poll() is None:
         t = time.time() - t0
         p, y, r, by, ant = style_fn(t)
         mini.set_target(
             head=create_head_pose(pitch=p, yaw=y, roll=r, degrees=False),
-            antennas=[ant, ant],
-            body_yaw=by,
+            antennas=[ant, ant], body_yaw=by,
         )
         time.sleep(dt)
     proc.wait()
-
-# ── Per-section animation styles ────────────────────────────────────────────
+    time.sleep(0.12)   # let ALSA device fully release before next sound
 
 def style_intro(t):
-    """Gentle curious sway. Neutral, a little shy."""
-    p  =  0.05 + _sin(0.06, 0.30, t) + _sin(0.02, 0.71, t)
-    y  =  _sin(0.14, 0.22, t) + _sin(0.05, 0.53, t)
-    r  =  _sin(0.05, 0.17, t)
-    by =  _sin(0.18, 0.14, t)
-    a  =  0.10 + _sin(0.12, 0.38, t)
+    p  =  0.05 + _s(0.06, 0.30, t) + _s(0.02, 0.71, t)
+    y  =  _s(0.14, 0.22, t) + _s(0.05, 0.53, t)
+    r  =  _s(0.05, 0.17, t)
+    by =  _s(0.18, 0.14, t)
+    a  =  0.10 + _s(0.12, 0.38, t)
     return p, y, r, by, a
 
 def style_dream(t):
-    """Hopeful and expansive — head up, antennas high, body open."""
-    p  =  0.18 + _sin(0.08, 0.28, t) + _sin(0.03, 0.67, t)
-    y  =  _sin(0.20, 0.24, t) + _sin(0.06, 0.55, t)
-    r  =  _sin(0.06, 0.19, t) + _sin(0.02, 0.43, t)
-    by =  _sin(0.45, 0.16, t) + _sin(0.14, 0.37, t)
-    a  =  0.50 + _sin(0.15, 0.42, t)
+    p  =  0.18 + _s(0.08, 0.28, t) + _s(0.03, 0.67, t)
+    y  =  _s(0.20, 0.24, t) + _s(0.06, 0.55, t)
+    r  =  _s(0.06, 0.19, t) + _s(0.02, 0.43, t)
+    by =  _s(0.45, 0.16, t) + _s(0.14, 0.37, t)
+    a  =  0.50 + _s(0.15, 0.42, t)
     return p, y, r, by, a
 
 def style_lost(t):
-    """Starts normal, head gradually droops, antennas slowly fall."""
-    droop = min(1.0, t / 8.0)               # droops over 8 seconds
-    p  = (0.05 - 0.30 * droop) + _sin(0.04 + 0.04 * droop, 0.32, t)
-    y  =  _sin(0.10 * (1 - droop * 0.6), 0.21, t) + _sin(0.04, 0.48, t)
-    r  =  _sin(0.04, 0.15, t) * (1 - droop * 0.5)
-    by =  _sin(0.10 * (1 - droop * 0.7), 0.13, t)
-    a  =  0.30 - 0.55 * droop + _sin(0.08, 0.35, t)
+    droop = min(1.0, t / 7.0)
+    p  = (0.05 - 0.28 * droop) + _s(0.04 + 0.04 * droop, 0.32, t)
+    y  =  _s(0.10 * (1 - droop * 0.6), 0.21, t) + _s(0.04, 0.48, t)
+    r  =  _s(0.04, 0.15, t) * (1 - droop * 0.5)
+    by =  _s(0.10 * (1 - droop * 0.7), 0.13, t)
+    a  =  0.30 - 0.55 * droop + _s(0.08, 0.35, t)
     return p, y, r, by, max(-0.40, a)
 
 def style_trembling(t):
-    """Rapid small shakes — trying not to cry. Head down and shaky."""
-    p  = -0.22 + _sin(0.04, 1.80, t) + _sin(0.02, 2.73, t)
-    y  =  _sin(0.06, 1.60, t) + _sin(0.03, 2.31, t)
-    r  =  _sin(0.04, 1.90, t) + _sin(0.02, 2.57, t)
-    by =  _sin(0.08, 0.90, t)
-    a  = -0.30 + _sin(0.08, 1.70, t)
+    p  = -0.22 + _s(0.04, 1.80, t) + _s(0.02, 2.73, t)
+    y  =  _s(0.06, 1.60, t) + _s(0.03, 2.31, t)
+    r  =  _s(0.04, 1.90, t) + _s(0.02, 2.57, t)
+    by =  _s(0.08, 0.90, t)
+    a  = -0.30 + _s(0.08, 1.70, t)
     return p, y, r, by, max(-0.45, a)
 
 def style_dignified(t):
-    """Slow, deliberate. Looks forward. Dignified sadness."""
-    p  =  0.02 + _sin(0.04, 0.18, t)
-    y  =  _sin(0.08, 0.16, t) + _sin(0.02, 0.39, t)
-    r  =  _sin(0.03, 0.12, t)
-    by =  _sin(0.12, 0.11, t)
-    a  =  0.22 + _sin(0.08, 0.24, t)
+    p  =  0.02 + _s(0.04, 0.18, t)
+    y  =  _s(0.08, 0.16, t) + _s(0.02, 0.39, t)
+    r  =  _s(0.03, 0.12, t)
+    by =  _s(0.12, 0.11, t)
+    a  =  0.22 + _s(0.08, 0.24, t)
     return p, y, r, by, a
 
-# ---------------------------------------------------------------------------
-# "About this tall" gesture — quick raise then back to sad
-# ---------------------------------------------------------------------------
-
 def gesture_height(mini):
-    """Quick upward look (showing Pixel's height) then droop back."""
     mini.goto_target(
-        head=create_head_pose(pitch=0.30, degrees=False),
-        antennas=[0.6, 0.6], duration=0.35,
+        head=create_head_pose(pitch=0.28, degrees=False),
+        antennas=[0.55, 0.55], duration=0.30,
     )
-    time.sleep(0.5)
-    mini.goto_target(
-        head=create_head_pose(pitch=-0.22, degrees=False),
-        antennas=[-0.35, -0.35], duration=0.8,
-    )
-    time.sleep(0.9)
-
-def transition_to_sad(mini):
+    time.sleep(0.45)
     mini.goto_target(
         head=create_head_pose(pitch=-0.20, degrees=False),
-        antennas=[-0.35, -0.35], body_yaw=0.0, duration=1.2,
+        antennas=[-0.30, -0.30], duration=0.70,
     )
-    time.sleep(1.3)
+    time.sleep(0.75)
 
-def transition_to_center(mini):
+def go_center(mini, duration=0.7):
     mini.goto_target(
         head=create_head_pose(), antennas=[0.0, 0.0],
-        body_yaw=0.0, duration=1.0,
+        body_yaw=0.0, duration=duration,
     )
-    time.sleep(1.1)
+    time.sleep(duration + 0.05)
+
+def go_sad(mini):
+    mini.goto_target(
+        head=create_head_pose(pitch=-0.18, degrees=False),
+        antennas=[-0.30, -0.30], body_yaw=0.0, duration=0.8,
+    )
+    time.sleep(0.85)
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
-    print("NS Robotics Club — Lost Friend Demo")
-    print("  Generating voices (this takes ~30 s)...")
-    durations = {}
-    for key, text in LINES.items():
-        print(f"    synthesising '{key}'...")
-        durations[key] = synth(key, text)
-        print(f"    {key}: {durations[key]:.1f}s")
+    print("NS Robotics Club — Lost Brother Demo")
 
-    print("\n  >>> RECORD CUE — hit record! <<<")
+    if needs_synth():
+        print("  Generating voices (first time only — cached after this)...")
+        durations = synth_all()
+        print("  Voice files saved to audio/lost_friend/")
+    else:
+        print("  Using cached voice files  (pass --regen to rebuild)")
+        durations = load_durations()
+
+    print("\n  >>> RECORD CUE <<<")
     record_cue()
-
-    print("  Booting...")
     boot_beeps()
-    time.sleep(1.5)
+    time.sleep(0.4)
 
     print("  Starting daemon...")
     daemon_proc = start_daemon()
@@ -294,37 +313,33 @@ def main():
                         media_backend="no_media",
                         spawn_daemon=False) as mini:
             mini.wake_up()
-            time.sleep(0.3)
 
-            # ── INTRO — shy hello ────────────────────────────────────────
-            print("\n  [intro]")
+            # ── INTRO ────────────────────────────────────────────────────
+            print("  [intro]")
             mini.play_move(em.get("attentive1"), play_frequency=80.0, sound=False)
-            time.sleep(0.2)
             animate(mini, "intro", style_intro)
-            time.sleep(0.8)
 
-            # ── DREAM — hopeful, expansive ───────────────────────────────
+            thinking_beeps()            # little processing blips between sections
+            time.sleep(0.2)
+
+            # ── DREAM ────────────────────────────────────────────────────
             print("  [dream]")
             mini.play_move(em.get("enthusiastic1"), play_frequency=80.0, sound=False)
-            time.sleep(0.3)
             animate(mini, "dream", style_dream)
-            time.sleep(1.2)
 
-            # ── LOST — gradual droop ─────────────────────────────────────
+            sad_beeps()                 # tone shifts — something is wrong
+            time.sleep(0.15)
+
+            # ── LOST ─────────────────────────────────────────────────────
             print("  [lost]")
-            # Pause before the bad news — let it land
-            transition_to_center(mini)
-            time.sleep(0.5)
+            go_center(mini, duration=0.5)
 
-            # Play "lost" line with drooping animation; pause mid-way for height gesture
-            # We split: play audio, inject gesture at ~5s in
-            proc = play_audio(WAV["lost"])
+            proc = play_audio("lost")
             t0 = time.time()
             gesture_done = False
             while proc.poll() is None:
                 t = time.time() - t0
-                # At ~5s ("About this tall") do the height gesture
-                if not gesture_done and t >= 4.8:
+                if not gesture_done and t >= 4.6:
                     gesture_done = True
                     gesture_height(mini)
                 p, y, r, by, a = style_lost(t)
@@ -334,36 +349,36 @@ def main():
                 )
                 time.sleep(0.05)
             proc.wait()
+            time.sleep(0.12)
 
-            # Sad sound + sniff after "please tell someone"
             sad_chirp()
-            time.sleep(0.5)
+            time.sleep(0.25)
             sniff()
-            time.sleep(0.4)
+            time.sleep(0.20)
             sniff()
-            time.sleep(1.5)
+            time.sleep(0.30)
 
-            # ── ALONE — trembling, trying not to cry ─────────────────────
+            # ── ALONE ────────────────────────────────────────────────────
             print("  [alone]")
             animate(mini, "alone", style_trembling)
-            time.sleep(0.6)
+
             sniff()
-            time.sleep(1.8)
+            time.sleep(0.15)
+            sad_beeps()
+            time.sleep(0.20)
 
-            # ── HELP — dignified, forward-looking ────────────────────────
+            # ── HELP ─────────────────────────────────────────────────────
             print("  [help]")
-            transition_to_sad(mini)
+            go_sad(mini)
             animate(mini, "help", style_dignified)
-            time.sleep(0.8)
 
-            # ── END — tiny hopeful chime, slow rise ──────────────────────
-            print("  [end]")
+            # ── END ──────────────────────────────────────────────────────
             hopeful_chime()
             mini.goto_target(
-                head=create_head_pose(pitch=0.10, degrees=False),
-                antennas=[0.35, 0.35], body_yaw=0.0, duration=2.0,
+                head=create_head_pose(pitch=0.08, degrees=False),
+                antennas=[0.30, 0.30], body_yaw=0.0, duration=1.5,
             )
-            time.sleep(2.5)
+            time.sleep(1.8)
             mini.goto_sleep()
             print("  Done.")
 
