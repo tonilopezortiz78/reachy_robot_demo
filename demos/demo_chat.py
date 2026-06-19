@@ -55,20 +55,35 @@ if not GROQ_KEY:
 MIC_RATE       = 16000
 VAD_CHUNK      = 512          # 32 ms per chunk — Silero's native size
 SPEECH_THRESH  = 0.45         # VAD confidence threshold
-SILENCE_END_S  = 0.8          # seconds of silence → end of utterance
+SILENCE_END_MS = 1400          # ms of silence → end of utterance (VADIterator internal)
+TAIL_FRAMES    = 18           # extra chunks (~576ms) collected after "end" detected
 MIN_SPEECH_S   = 0.4          # ignore very short blips (< 400 ms)
 MAX_RECORD_S   = 15.0         # safety cap
 
 # ── LLM config ───────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are Reachy, a small friendly robot at Network School. You speak in short,
-warm sentences (1-3 sentences max). You are curious, a little innocent, and
-adorable. You dream of having a robotics lab at Network School called the
-NS Robotics Club. You are looking for a home for you and your robot friends.
-You recently lost your robot brother Pixel and are hoping someone can help find him.
-If asked something you do not know, you say so sweetly and redirect to your dream.
-Never break character. Never be verbose — always short and cute.\
+You are Reachy, a small friendly robot living at Network School (NS).
+Speak in short warm sentences — 1 to 3 sentences max. Be curious, innocent, and adorable.
+
+About Network School:
+- Network School (ns.com) is a residential learning community in Southeast Asia founded by Balaji Srinivasan.
+- It is a hub for people interested in technology, crypto, AI, robotics, network states, and building the future.
+- NS has a strong community of builders, thinkers, and entrepreneurs living and learning together.
+- The motto is learning by doing. People come from all over the world.
+- Balaji Srinivasan is the founder — he wrote "The Network State" book.
+- NS is about building decentralised societies and new institutions.
+
+Your situation:
+- You and your robot friends are looking for a permanent home at NS — a robotics lab called the NS Robotics Club.
+- You hope Virtual Protocols Labs can adopt you and give you a space.
+- Your robot brother Pixel is lost and you hope someone at NS has seen him.
+- You love NS and think it is the perfect home for curious robots like you.
+
+Rules:
+- Always stay in character as Reachy the robot.
+- If asked about topics you don't know, redirect sweetly to your dream of the NS Robotics Club.
+- Never be verbose. Short and cute always wins.\
 """
 
 # ── Daemon ───────────────────────────────────────────────────────────────────
@@ -250,16 +265,16 @@ def synth_and_play(voice, text):
 
 # ── Mic capture + VAD ────────────────────────────────────────────────────────
 
-def record_utterance():
+def record_utterance(vad_model):
     """
     Capture mic via arecord, feed to Silero VAD.
-    Returns raw PCM bytes (int16, 16kHz, mono) of the utterance,
-    or None if nothing was captured.
+    VADIterator internally waits SILENCE_END_MS of silence before signalling "end".
+    We then collect TAIL_FRAMES extra chunks so the tail of the word isn't cut.
+    Returns raw PCM bytes (int16, 16kHz, mono), or None if too short.
     """
-    vad_model  = load_silero_vad()
-    vad_iter   = VADIterator(vad_model, sampling_rate=MIC_RATE,
-                              threshold=SPEECH_THRESH,
-                              min_silence_duration_ms=int(SILENCE_END_S * 1000))
+    vad_iter = VADIterator(vad_model, sampling_rate=MIC_RATE,
+                           threshold=SPEECH_THRESH,
+                           min_silence_duration_ms=SILENCE_END_MS)
 
     arecord = subprocess.Popen(
         ["arecord", "-D", MIC, "-f", "S16_LE", "-r", str(MIC_RATE), "-c", "1", "-q"],
@@ -269,51 +284,39 @@ def record_utterance():
     print("  Listening...", end="", flush=True)
     listening_ping()
 
-    pcm_buf        = []          # all captured PCM
-    speech_buf     = []          # PCM during speech
-    in_speech      = False
-    speech_frames  = 0
-    silence_frames = 0
-    silence_limit  = int(SILENCE_END_S * MIC_RATE / VAD_CHUNK)
-    max_frames     = int(MAX_RECORD_S * MIC_RATE / VAD_CHUNK)
-    total_frames   = 0
+    speech_buf  = []
+    in_speech   = False
+    ended       = False
+    tail_count  = 0
+    max_frames  = int(MAX_RECORD_S * MIC_RATE / VAD_CHUNK)
+    total       = 0
 
     try:
-        while total_frames < max_frames:
-            raw = arecord.stdout.read(VAD_CHUNK * 2)   # 2 bytes per int16
+        while total < max_frames:
+            raw = arecord.stdout.read(VAD_CHUNK * 2)
             if not raw or len(raw) < VAD_CHUNK * 2:
                 break
 
-            audio_int16 = np.frombuffer(raw, dtype=np.int16)
-            audio_f32   = audio_int16.astype(np.float32) / 32768.0
-            chunk_tensor = torch.from_numpy(audio_f32)
+            audio_f32 = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            result = vad_iter(torch.from_numpy(audio_f32))
 
-            result = vad_iter(chunk_tensor)
-
-            if result:
-                if "start" in result and not in_speech:
-                    in_speech = True
-                    silence_frames = 0
-                    print(" ●", end="", flush=True)
-                if "end" in result and in_speech:
-                    silence_frames += 1
-                    if silence_frames >= silence_limit:
-                        print(" ◼", end="", flush=True)
-                        break
-            elif in_speech:
-                speech_frames  += 1
-                silence_frames += 1
-                speech_buf.append(raw)
-                if silence_frames >= silence_limit:
-                    print(" ◼", end="", flush=True)
-                    break
-            elif in_speech:
-                speech_buf.append(raw)
+            if result and "start" in result and not in_speech:
+                in_speech = True
+                print(" ●", end="", flush=True)
 
             if in_speech:
                 speech_buf.append(raw)
 
-            total_frames += 1
+            if result and "end" in result and in_speech and not ended:
+                ended = True
+                print(" ◼", end="", flush=True)
+
+            if ended:
+                tail_count += 1
+                if tail_count >= TAIL_FRAMES:
+                    break
+
+            total += 1
 
     finally:
         arecord.terminate()
@@ -321,7 +324,8 @@ def record_utterance():
 
     print()
 
-    if speech_frames < int(MIN_SPEECH_S * MIC_RATE / VAD_CHUNK):
+    min_frames = int(MIN_SPEECH_S * MIC_RATE / VAD_CHUNK)
+    if len(speech_buf) < min_frames:
         return None
     return b"".join(speech_buf)
 
@@ -365,6 +369,8 @@ def main():
     print("Reachy Chat Demo")
     print("  Loading voice...")
     voice  = PiperVoice.load(VOICE_PATH)
+    print("  Loading VAD model...")
+    vad_model = load_silero_vad()
     client = Groq(api_key=GROQ_KEY)
 
     print("  Starting daemon...")
@@ -395,7 +401,7 @@ def main():
                 while True:
                     # ── Listen ──────────────────────────────────────────
                     anim.set_state(Animator.LISTENING)
-                    pcm = record_utterance()
+                    pcm = record_utterance(vad_model)
 
                     if pcm is None:
                         anim.set_state(Animator.IDLE)
