@@ -405,23 +405,34 @@ def _is_chinese(text: str) -> bool:
     cjk = sum(1 for c in text if '一' <= c <= '鿿')
     return cjk > max(2, len(text) * 0.15)
 
-async def _edge_tts_synth(text: str, out_wav: str, voice="zh-CN-XiaoxiaoNeural"):
+async def _edge_tts_synth(text: str, out_wav: str, voice="zh-CN-YunyangNeural"):
     """Synthesise Chinese text via edge-tts → convert to WAV."""
     import edge_tts
     mp3 = out_wav + ".mp3"
-    tts = edge_tts.Communicate(text, voice=voice)
+    # rate="-18%" — noticeably slower delivery so each tone is clear and distinct
+    tts = edge_tts.Communicate(text, voice=voice, rate="-18%")
     await tts.save(mp3)
+    # Resample to 48kHz with high-quality SWR before handing to ALSA.
+    # This is critical for Mandarin: ALSA's on-the-fly resampling from 24→48kHz
+    # can introduce subtle pitch artefacts that smear tonal distinctions.
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-i", mp3, "-af", "volume=2.2", out_wav],
+         "-i", mp3,
+         "-af", "aresample=resampler=swr:out_sample_rate=48000,volume=2.0",
+         out_wav],
         check=True,
     )
     Path(mp3).unlink(missing_ok=True)
 
+# YunyangNeural is Microsoft's newscast-style Mandarin voice.
+# Newscast voices are trained with explicit tone precision and clear articulation —
+# the best choice for a robot that needs to be understood in a noisy event space.
+CHINESE_VOICE = "zh-CN-YunyangNeural"
+
 def _synth_to_file_chinese(text: str) -> str:
-    """Synthesise Chinese text → return temp WAV path. Caller must delete."""
+    """Synthesise Chinese text → return temp WAV path (48kHz WAV). Caller must delete."""
     out = tempfile.mktemp(suffix=".wav")
-    asyncio.run(_edge_tts_synth(text, out))
+    asyncio.run(_edge_tts_synth(text, out, voice=CHINESE_VOICE))
     return out
 
 def _play_wav_blocking(path: str):
