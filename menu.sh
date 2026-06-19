@@ -18,8 +18,8 @@ echo "║                                                      ║"
 echo "║  4) Lost Brother      demo_lost_friend.py           ║"
 echo "║     Emotional pitch for NS Robotics Club            ║"
 echo "║                                                      ║"
-echo "║  5) Chat with Reachy  demo_chat.py                  ║"
-echo "║     Talk to the robot — Whisper STT + LLaMA LLM     ║"
+echo "║  5) Talk about NS     demo_talk_ns.py                ║"
+echo "║     Reachy NS ambassador — crypto, AI, Virtuals      ║"
 echo "║                                                      ║"
 echo "║  q) Quit                                             ║"
 echo "╚══════════════════════════════════════════════════════╝"
@@ -31,7 +31,7 @@ case $choice in
   2) ./run.sh demos/demo_dance.py ;;
   3) ./run.sh demos/demo_face.py ;;
   4) ./run.sh demos/demo_lost_friend.py ;;
-  5) ./run.sh demos/demo_chat.py ;;
+  5) ./run.sh demos/demo_talk_ns.py ;;
   q|Q) echo "bye"; exit 0 ;;
   *) echo "Unknown choice."; exit 1 ;;
 esac
