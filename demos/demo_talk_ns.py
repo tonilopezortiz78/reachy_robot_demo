@@ -141,7 +141,8 @@ NS Principles:
 - Talk enthusiastically about NS, Virtuals Protocol, Bitcoin, AI, network states, decentralisation.
 - For off-topic things (sports, food, etc.) say you don't know much, then bring it back to tech or NS.
 - Be funny when appropriate — André would approve. Short jokes land better than long ones.
-- Never be verbose. Short and cute always wins. 1-3 sentences maximum.\
+- Never be verbose. Short and cute always wins. 1-3 sentences maximum.
+- CRITICAL: Never use markdown, asterisks, bullet points, bold, italic, or any formatting. Plain spoken words only — this is voice output.\
 """
 
 # ── Daemon ───────────────────────────────────────────────────────────────────
@@ -377,6 +378,19 @@ def transcribe(client, pcm: bytes) -> str:
     )
     return transcription.strip()
 
+# ── Text cleaning ─────────────────────────────────────────────────────────────
+
+def clean_for_tts(text: str) -> str:
+    """Strip markdown that TTS would read as literal symbols."""
+    text = re.sub(r'\*+', '', text)                          # ** * ***
+    text = re.sub(r'_+', '', text)                           # __ _
+    text = re.sub(r'`+', '', text)                           # ` ``
+    text = re.sub(r'#+\s*', '', text)                        # ## headings
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)   # [text](url) → text
+    text = re.sub(r'^\s*[-•–]\s*', '', text, flags=re.M)     # bullet points
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
 # ── Streaming TTS ─────────────────────────────────────────────────────────────
 # LLM streams tokens → split on sentence boundaries → synthesise + play each
 # sentence as soon as it arrives, instead of waiting for the full response.
@@ -482,7 +496,7 @@ def stream_and_speak(client, voice, history: list, user_text: str, anim) -> str:
         if len(parts) > 1:
             # All parts except the last are complete sentences
             for sentence in parts[:-1]:
-                sentence = sentence.strip()
+                sentence = clean_for_tts(sentence)
                 if not sentence:
                     continue
                 anim.set_state(Animator.SPEAKING)
@@ -496,7 +510,7 @@ def stream_and_speak(client, voice, history: list, user_text: str, anim) -> str:
             buffer = parts[-1]   # remainder — sentence still in progress
 
     # Speak any leftover text
-    remaining = buffer.strip()
+    remaining = clean_for_tts(buffer)
     if remaining:
         anim.set_state(Animator.SPEAKING)
         speaking_chime()
