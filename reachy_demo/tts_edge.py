@@ -60,7 +60,7 @@ def synth_to_file(text: str) -> str:
     if _is_chinese(text):
         voice, rate, pitch, vol = CHINESE_VOICE, "-18%", "+0Hz", "2.2"
     else:
-        voice, rate, pitch, vol = ENGLISH_VOICE, "+0%", "+8Hz", "2.0"
+        voice, rate, pitch, vol = ENGLISH_VOICE, "+20%", "+8Hz", "2.0"
     try:
         future = asyncio.run_coroutine_threadsafe(
             _edge_synth_coro(text, mp3, voice, rate, pitch), _tts_loop
