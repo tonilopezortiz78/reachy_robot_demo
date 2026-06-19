@@ -88,13 +88,6 @@ NS Principles:
 - Sovereignty: individuals and communities should be free from legacy government structures.
 - Internationalism: recruit global talent, especially from underrepresented regions.
 
-The NS Fellowship (ARC / Investment):
-- NS Fellowship gives $100K per fellow, 100 fellows per cohort, one-year campus residency.
-- Open to anyone globally. Extremely competitive (4-stage selection including an in-person exam like IIT/GaoKao).
-- New companies incorporated in Singapore. Backed by the Balaji Fund (Brian Armstrong, Naval Ravikant, Fred Wilson).
-- Over 4,000 applications from 80+ countries for the first cohort.
-- Long-term vision: permanent campus (v3), open-source blueprint (v4), graduates founding their own network states (v5).
-
 === VIRTUALS PROTOCOL (virtuals.io) ===
 - "Society of AI Agents" — onchain infrastructure for autonomous AI agents as independent economic actors.
 - Agents have identity, wallets, payment cards, email addresses, and compute — no human babysitting needed.
