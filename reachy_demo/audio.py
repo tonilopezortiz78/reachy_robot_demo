@@ -23,13 +23,13 @@ from silero_vad import VADIterator
 # ── Hardware constants ────────────────────────────────────────────────────────
 
 SPEAKER = "plughw:CARD=Audio,DEV=0"
-MIC     = "plughw:CARD=Camera,DEV=0"
+MIC     = "alsa_input.pci-0000_00_1f.3.analog-stereo"   # laptop mic via PipeWire
 
 # ── VAD constants ─────────────────────────────────────────────────────────────
 
 MIC_RATE       = 16000
 VAD_CHUNK      = 512          # 32 ms per chunk — Silero's native size
-SPEECH_THRESH  = 0.25         # VAD confidence threshold (low for camera MEMS mic)
+SPEECH_THRESH  = 0.45         # VAD confidence threshold
 SILENCE_END_MS = 1400         # ms of silence → end of utterance (VADIterator internal)
 TAIL_FRAMES    = 18           # extra chunks (~576ms) collected after "end" detected
 MIN_SPEECH_S   = 0.4          # ignore very short blips (< 400 ms)
@@ -121,7 +121,9 @@ def record_utterance(vad_model, ping=None) -> bytes | None:
                            min_silence_duration_ms=SILENCE_END_MS)
 
     arecord = subprocess.Popen(
-        ["arecord", "-D", MIC, "-f", "S16_LE", "-r", str(MIC_RATE), "-c", "1", "-q"],
+        ["pacat", "--record", "--raw",
+         f"--device={MIC}",
+         f"--rate={MIC_RATE}", "--channels=1", "--format=s16le"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
 

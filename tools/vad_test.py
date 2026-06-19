@@ -3,7 +3,7 @@
 import subprocess, sys, numpy as np, torch
 sys.path.insert(0, ".")
 
-MIC = "plughw:CARD=Camera,DEV=0"
+MIC = "alsa_input.pci-0000_00_1f.3.analog-stereo"
 RATE = 16000
 CHUNK = 512  # 32ms
 
@@ -13,7 +13,8 @@ vad.eval()
 print("Ready. Speak into the robot mic. Ctrl+C to stop.\n")
 
 arecord = subprocess.Popen(
-    ["arecord", "-D", MIC, "-f", "S16_LE", "-r", str(RATE), "-c", "1", "-q"],
+    ["pacat", "--record", "--raw", f"--device={MIC}",
+     f"--rate={RATE}", "--channels=1", "--format=s16le"],
     stdout=subprocess.PIPE, stderr=None,
 )
 
