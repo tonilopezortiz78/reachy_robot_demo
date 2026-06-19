@@ -135,6 +135,7 @@ def listening_ping():
 def stream_and_speak(client, history: list, user_text: str, anim) -> str:
     history.append({"role": "user", "content": user_text})
 
+    t_llm_start = time.time()
     stream = client.chat.completions.create(
         model=MODEL,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
@@ -147,9 +148,13 @@ def stream_and_speak(client, history: list, user_text: str, anim) -> str:
     sentences = []
     full_text = ""
     buffer    = ""
+    first_token = True
 
     for chunk in stream:
         delta      = chunk.choices[0].delta.content or ""
+        if delta and first_token:
+            print(f"  LLM  {time.time()-t_llm_start:.2f}s (first token)", flush=True)
+            first_token = False
         buffer    += delta
         full_text += delta
         parts = SENTENCE_END.split(buffer)
@@ -162,6 +167,7 @@ def stream_and_speak(client, history: list, user_text: str, anim) -> str:
     remaining = clean_for_tts(buffer)
     if remaining:
         sentences.append(remaining)
+    print(f"  LLM  {time.time()-t_llm_start:.2f}s total  {len(sentences)} sentence(s)", flush=True)
 
     if not sentences:
         full_text = full_text.strip()
@@ -247,7 +253,9 @@ def main():
                     anim.set_state(Animator.THINKING)
                     thinking_blips()
                     try:
+                        t0 = time.time()
                         text = transcribe(client, pcm_to_wav_bytes(pcm))
+                        print(f"  STT  {time.time()-t0:.2f}s", flush=True)
                     except Exception as e:
                         print(f"  STT error: {e}")
                         error_chime()
@@ -263,7 +271,9 @@ def main():
                     try:
                         anim.set_state(Animator.THINKING)
                         thinking_blips()
+                        t0 = time.time()
                         reply = stream_and_speak(client, history, text, anim)
+                        print(f"  Total  {time.time()-t0:.2f}s", flush=True)
                     except Exception as e:
                         print(f"  LLM/TTS error: {e}")
                         error_chime()

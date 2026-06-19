@@ -17,11 +17,13 @@ def launch_daemon() -> subprocess.Popen:
 
 def wait_for_daemon(proc: subprocess.Popen, timeout: float = 20.0) -> subprocess.Popen:
     """Block until port 8000 is listening (or timeout)."""
-    deadline = time.time() + timeout
+    t0 = time.time()
+    deadline = t0 + timeout
     while time.time() < deadline:
         time.sleep(0.1)
         try:
             with socket.create_connection(("127.0.0.1", 8000), timeout=0.3):
+                print(f"  Daemon ready  {time.time()-t0:.1f}s", flush=True)
                 return proc
         except OSError:
             pass

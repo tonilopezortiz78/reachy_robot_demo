@@ -167,58 +167,65 @@ def _synth_to_file_chinese(text: str) -> str:
 # First word starts playing ~0.5s after STT finishes instead of ~1.5s.
 
 def stream_and_speak(client, voice, history: list, user_text: str, anim) -> str:
-    """
-    Stream LLM response sentence by sentence.
-    Each sentence is synthesised and played as soon as it arrives.
-    Returns the full reply text.
-    """
     history.append({"role": "user", "content": user_text})
 
-    buffer    = ""
-    full_text = ""
-    wavs      = []   # temp files to clean up
-    spoke     = False
+    buffer     = ""
+    full_text  = ""
+    wavs       = []
+    spoke      = False
+    t_start    = time.time()
+    first_tok  = True
+    n_sentence = 0
 
     try:
         for delta in stream_chat(client, history, MODEL, SYSTEM_PROMPT):
+            if delta and first_tok:
+                print(f"  LLM  {time.time()-t_start:.2f}s (first token)", flush=True)
+                first_tok = False
             buffer    += delta
             full_text += delta
 
-            # Flush complete sentences immediately
             parts = SENTENCE_END.split(buffer)
             if len(parts) > 1:
-                # All parts except the last are complete sentences
                 for sentence in parts[:-1]:
                     sentence = clean_for_tts(sentence)
                     if not sentence:
                         continue
+                    n_sentence += 1
                     anim.set_state(Animator.SPEAKING)
                     if not spoke:
                         speaking_chime()
                         spoke = True
+                    t1 = time.time()
                     if _is_chinese(sentence):
                         wav = _synth_to_file_chinese(sentence)
                     else:
                         wav = synth_to_file(voice, sentence)
+                    print(f"  Piper[{n_sentence}] {time.time()-t1:.2f}s", flush=True)
                     wavs.append(wav)
                     play_wav_blocking(wav)
-                buffer = parts[-1]   # remainder — sentence still in progress
+                buffer = parts[-1]
 
-        # Speak any leftover text
         remaining = clean_for_tts(buffer)
         if remaining:
+            n_sentence += 1
             anim.set_state(Animator.SPEAKING)
             if not spoke:
                 speaking_chime()
+            t1 = time.time()
             if _is_chinese(remaining):
                 wav = _synth_to_file_chinese(remaining)
             else:
                 wav = synth_to_file(voice, remaining)
+            print(f"  Piper[{n_sentence}] {time.time()-t1:.2f}s", flush=True)
             wavs.append(wav)
             play_wav_blocking(wav)
 
         full_text = full_text.strip()
         history.append({"role": "assistant", "content": full_text})
+        if len(history) > 8:
+            history[:] = history[-8:]
+        print(f"  Total  {time.time()-t_start:.2f}s", flush=True)
         return full_text
     finally:
         for w in wavs:
@@ -276,7 +283,9 @@ def main():
                     anim.set_state(Animator.THINKING)
                     thinking_blips()
                     try:
+                        t0 = time.time()
                         text = transcribe(client, pcm_to_wav_bytes(pcm))
+                        print(f"  STT  {time.time()-t0:.2f}s", flush=True)
                     except Exception as e:
                         print(f"  STT error: {e}")
                         error_chime()

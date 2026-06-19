@@ -15,6 +15,7 @@ import asyncio
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import edge_tts as _edge_tts_mod  # import once at module level
@@ -61,11 +62,16 @@ def synth_to_file(text: str) -> str:
         voice, rate, pitch, vol = CHINESE_VOICE, "-18%", "+0Hz", "2.2"
     else:
         voice, rate, pitch, vol = ENGLISH_VOICE, "+20%", "+8Hz", "2.0"
+    snippet = text[:50].replace("\n", " ")
     try:
+        t0 = time.time()
         future = asyncio.run_coroutine_threadsafe(
             _edge_synth_coro(text, mp3, voice, rate, pitch), _tts_loop
         )
         future.result(timeout=33.0)
+        t_edge = time.time() - t0
+
+        t1 = time.time()
         subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
              "-i", mp3,
@@ -73,6 +79,9 @@ def synth_to_file(text: str) -> str:
              out],
             check=True,
         )
+        t_ffmpeg = time.time() - t1
+
+        print(f"  TTS  {t_edge:.2f}s edge  {t_ffmpeg:.2f}s ffmpeg  │ {snippet!r}", flush=True)
     finally:
         Path(mp3).unlink(missing_ok=True)
     return out
