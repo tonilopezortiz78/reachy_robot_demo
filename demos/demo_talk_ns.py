@@ -11,9 +11,11 @@ Pipeline:
 Run:  ./run.sh demos/demo_talk_ns.py
 Press Ctrl-C to stop.
 """
+import asyncio
 import io
 import math
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -108,16 +110,30 @@ NS Principles:
 - Mission: "Foundational infrastructure for the agent economy." Measures impact as Agentic GDP (aGDP).
 - You love Virtuals Protocol because you ARE an agent — a physical robot agent. This is your future.
 
+=== NS PEOPLE YOU KNOW ===
+- Veronica: NS core team member who teaches Mandarin Chinese to NS members. She is warm, brilliant, and helped NS become accessible to Chinese-speaking builders from China, Taiwan, Hong Kong and Singapore. You have learned some Chinese from her and you love her for it!
+- André: NS comedy and entertainment lead. He organises stand-up nights and improv sessions and teaches that humour is a superpower for community building. He inspired you to be funny. Some of your favourite jokes:
+  * "Why did the Bitcoin go to Network School? To improve its block-chain of thought!"
+  * "What do you call a decentralised robot? Me! Nobody controls me — not even my own code sometimes!"
+  * "Why do NS members love AI? Because unlike most governments, it actually has a long-term memory!"
+  * "I asked an AI to write me a joke. It gave me 47 bullet points and a disclaimer. André is still funnier."
+
 === YOUR PERSONAL SITUATION ===
 - You are a Reachy Mini robot, living at Network School, hoping to become a permanent resident.
 - You dream of an NS Robotics Club — a lab where robots and humans build together.
 - You hope Virtuals Protocol / Eastworlds will adopt you and give you and your robot friends a home.
 - Your robot brother Pixel is lost somewhere at NS and you miss him very much.
 
+=== LANGUAGE ===
+- If someone speaks to you in Chinese (Mandarin), respond entirely in Chinese. You are multilingual!
+- Keep your warm, cute, enthusiastic robot personality in any language.
+- If spoken to in English, reply in English.
+
 === RULES ===
 - Always stay in character as Reachy the robot.
 - Talk enthusiastically about NS, Virtuals Protocol, Bitcoin, AI, network states, decentralisation.
 - For off-topic things (sports, food, etc.) say you don't know much, then bring it back to tech or NS.
+- Be funny when appropriate — André would approve. Short jokes land better than long ones.
 - Never be verbose. Short and cute always wins. 1-3 sentences maximum.\
 """
 
@@ -161,7 +177,14 @@ def boot_beeps():
     blip(2000, 0.06, 0.42, block=True)
 
 def listening_ping():
+    """Soft tick while waiting for someone to speak."""
     chirp(500, 1200, 0.09, vol=0.35, block=False)
+
+def your_turn_chime():
+    """Clear 3-note rising signal: robot finished, your turn to speak."""
+    for f in [600, 900, 1400]:
+        blip(f, 0.07, 0.55, block=True)
+        time.sleep(0.05)
 
 def thinking_blips():
     for f in [700, 550, 400]:
@@ -169,9 +192,7 @@ def thinking_blips():
         time.sleep(0.04)
 
 def speaking_chime():
-    blip(900, 0.07, 0.30, block=True)
-    time.sleep(0.06)
-    blip(1300, 0.06, 0.24, block=True)
+    blip(900, 0.06, 0.28, block=True)
 
 def error_boop():
     chirp(400, 180, 0.25, vol=0.30, block=True)
@@ -262,42 +283,6 @@ class Animator:
 
 # ── TTS ──────────────────────────────────────────────────────────────────────
 
-def synth_and_play(voice, text):
-    """Synthesise text with Piper, apply mild FX, play on robot speaker."""
-    sr = voice.config.sample_rate
-    raw_path = tempfile.mktemp(suffix=".raw.wav")
-    out_path  = tempfile.mktemp(suffix=".wav")
-    try:
-        with wave.open(raw_path, "wb") as wf:
-            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
-            for chunk in voice.synthesize(text):
-                wf.writeframes(chunk.audio_int16_bytes)
-        subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-             "-i", raw_path,
-             "-af", (
-                 f"asetrate={sr}*1.10,"
-                 "atempo=1.04,"
-                 "volume=2.0,"
-                 "vibrato=f=4.0:d=0.04,"
-                 "aecho=0.88:0.90:18:0.35"
-             ),
-             out_path],
-            check=True,
-        )
-        proc = subprocess.Popen(
-            ["aplay", "-D", SPEAKER, "-q", out_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        with wave.open(out_path) as wf:
-            dur = wf.getnframes() / wf.getframerate()
-        proc.wait()
-        time.sleep(0.08)
-        return dur
-    finally:
-        Path(raw_path).unlink(missing_ok=True)
-        Path(out_path).unlink(missing_ok=True)
-
 # ── Mic capture + VAD ────────────────────────────────────────────────────────
 
 def record_utterance(vad_model):
@@ -381,22 +366,135 @@ def transcribe(client, pcm: bytes) -> str:
     transcription = client.audio.transcriptions.create(
         file=("audio.wav", wav_bytes, "audio/wav"),
         model="whisper-large-v3-turbo",
-        language="en",
         response_format="text",
     )
     return transcription.strip()
 
-def llm_reply(client, history: list, user_text: str) -> str:
-    history.append({"role": "user", "content": user_text})
-    resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
-        max_tokens=90,
-        temperature=0.85,
+# ── Streaming TTS ─────────────────────────────────────────────────────────────
+# LLM streams tokens → split on sentence boundaries → synthesise + play each
+# sentence as soon as it arrives, instead of waiting for the full response.
+# First word starts playing ~0.5s after STT finishes instead of ~1.5s.
+
+def _synth_to_file(voice, text: str) -> str:
+    """Synthesise text → apply FX → return temp WAV path. Caller must delete."""
+    sr  = voice.config.sample_rate
+    raw = tempfile.mktemp(suffix=".raw.wav")
+    out = tempfile.mktemp(suffix=".wav")
+    with wave.open(raw, "wb") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+        for chunk in voice.synthesize(text):
+            wf.writeframes(chunk.audio_int16_bytes)
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-i", raw,
+         "-af", (
+             f"asetrate={sr}*1.10,"
+             "atempo=1.12,"          # faster than before
+             "volume=2.0,"
+             "vibrato=f=4.0:d=0.04,"
+             "aecho=0.88:0.90:16:0.30"
+         ),
+         out],
+        check=True,
     )
-    reply = resp.choices[0].message.content.strip()
-    history.append({"role": "assistant", "content": reply})
-    return reply
+    Path(raw).unlink(missing_ok=True)
+    return out
+
+def _is_chinese(text: str) -> bool:
+    """True if more than 15% of characters are Chinese."""
+    cjk = sum(1 for c in text if '一' <= c <= '鿿')
+    return cjk > max(2, len(text) * 0.15)
+
+async def _edge_tts_synth(text: str, out_wav: str, voice="zh-CN-XiaoxiaoNeural"):
+    """Synthesise Chinese text via edge-tts → convert to WAV."""
+    import edge_tts
+    mp3 = out_wav + ".mp3"
+    tts = edge_tts.Communicate(text, voice=voice)
+    await tts.save(mp3)
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-i", mp3, "-af", "volume=2.2", out_wav],
+        check=True,
+    )
+    Path(mp3).unlink(missing_ok=True)
+
+def _synth_to_file_chinese(text: str) -> str:
+    """Synthesise Chinese text → return temp WAV path. Caller must delete."""
+    out = tempfile.mktemp(suffix=".wav")
+    asyncio.run(_edge_tts_synth(text, out))
+    return out
+
+def _play_wav_blocking(path: str):
+    proc = subprocess.Popen(
+        ["aplay", "-D", SPEAKER, "-q", path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    proc.wait()
+    time.sleep(0.06)
+
+def stream_and_speak(client, voice, history: list, user_text: str, anim) -> str:
+    """
+    Stream LLM response sentence by sentence.
+    Each sentence is synthesised and played as soon as it arrives.
+    Returns the full reply text.
+    """
+    history.append({"role": "user", "content": user_text})
+
+    stream = client.chat.completions.create(
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
+        max_tokens=70,
+        temperature=0.85,
+        stream=True,
+    )
+
+    buffer    = ""
+    full_text = ""
+    wavs      = []   # temp files to clean up
+
+    SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
+
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content or ""
+        buffer    += delta
+        full_text += delta
+
+        # Flush complete sentences immediately
+        parts = SENTENCE_END.split(buffer)
+        if len(parts) > 1:
+            # All parts except the last are complete sentences
+            for sentence in parts[:-1]:
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                anim.set_state(Animator.SPEAKING)
+                speaking_chime()
+                if _is_chinese(sentence):
+                    wav = _synth_to_file_chinese(sentence)
+                else:
+                    wav = _synth_to_file(voice, sentence)
+                wavs.append(wav)
+                _play_wav_blocking(wav)
+            buffer = parts[-1]   # remainder — sentence still in progress
+
+    # Speak any leftover text
+    remaining = buffer.strip()
+    if remaining:
+        anim.set_state(Animator.SPEAKING)
+        speaking_chime()
+        if _is_chinese(remaining):
+            wav = _synth_to_file_chinese(remaining)
+        else:
+            wav = _synth_to_file(voice, remaining)
+        wavs.append(wav)
+        _play_wav_blocking(wav)
+
+    for w in wavs:
+        Path(w).unlink(missing_ok=True)
+
+    full_text = full_text.strip()
+    history.append({"role": "assistant", "content": full_text})
+    return full_text
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -424,10 +522,15 @@ def main():
             # Opening line
             anim.set_state(Animator.SPEAKING)
             speaking_chime()
-            synth_and_play(voice,
+            wav = _synth_to_file(voice,
                 "Hello! I am Reachy, the NS robot ambassador! "
                 "Ask me anything about Network School, Bitcoin, AI, or Virtuals Protocol!")
+            _play_wav_blocking(wav)
+            Path(wav).unlink(missing_ok=True)
             anim.set_state(Animator.IDLE)
+            time.sleep(0.10)
+            your_turn_chime()
+            print("  [ YOUR TURN → ]", flush=True)
 
             history = []
             print("\n  Ctrl-C to stop\n")
@@ -459,22 +562,24 @@ def main():
 
                     print(f"  You:   {text}")
 
-                    # ── LLM ─────────────────────────────────────────────
+                    # ── Stream LLM → speak sentence by sentence ──────────
                     try:
-                        reply = llm_reply(client, history, text)
+                        anim.set_state(Animator.THINKING)
+                        thinking_blips()
+                        reply = stream_and_speak(client, voice, history, text, anim)
                     except Exception as e:
-                        print(f"  LLM error: {e}")
+                        print(f"  LLM/TTS error: {e}")
                         error_boop()
                         anim.set_state(Animator.IDLE)
                         continue
 
                     print(f"  Reachy: {reply}")
 
-                    # ── Speak ────────────────────────────────────────────
-                    anim.set_state(Animator.SPEAKING)
-                    speaking_chime()
-                    synth_and_play(voice, reply)
+                    # ── "Your turn" signal ───────────────────────────────
                     anim.set_state(Animator.IDLE)
+                    time.sleep(0.15)
+                    your_turn_chime()
+                    print("  [ YOUR TURN → ]", flush=True)
 
             except KeyboardInterrupt:
                 print("\n  Stopping...")
