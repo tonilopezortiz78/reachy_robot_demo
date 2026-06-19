@@ -13,22 +13,21 @@ Voice processing:
   the raw Piper voice.
 """
 import math
-import os
 import socket
 import subprocess
 import time
 import wave
+from pathlib import Path
 
 from piper import PiperVoice
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
 
-VOICE_PATH      = "voices/en_US-amy-medium.onnx"
+ROOT            = Path(__file__).parent.parent
+VOICE_PATH      = str(ROOT / "voices" / "en_US-amy-medium.onnx")
 SPEAKER         = "plughw:CARD=Audio,DEV=0"
-WAV_RAW         = "/tmp/ns_welcome_raw.wav"
-WAV_FX          = "/tmp/ns_welcome_fx.wav"
-ROBOT_VOICE_FX  = True   # set False to hear unprocessed voice
+CACHE_WAV       = str(ROOT / "cache" / "welcome.wav")  # persists between runs
 
 GREETING = (
     "Welcome... to Network School! "
@@ -104,35 +103,31 @@ def ready_blip():
 # TTS + voice effect
 # ---------------------------------------------------------------------------
 
-def synth(text: str, raw_path: str, fx_path: str, apply_fx: bool) -> float:
-    """
-    Render text → WAV via Piper, optionally add robotic effect, return duration.
+def synth_cached(text: str, cache_path: str) -> tuple[float, str]:
+    """Return (duration, path). Generates once and caches — instant on subsequent runs."""
+    if Path(cache_path).exists():
+        print("  (using cached audio)")
+        with wave.open(cache_path) as wf:
+            return wf.getnframes() / wf.getframerate(), cache_path
 
-    Effect chain: vibrato (gentle mechanical wobble) + quick metallic echo.
-    This makes the voice sound AI/robot without destroying intelligibility.
-    """
+    print("  (generating — will be cached for next time)")
+    Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+    raw = cache_path + ".raw.wav"
     voice = PiperVoice.load(VOICE_PATH)
-    with wave.open(raw_path, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
+    with wave.open(raw, "wb") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2)
         wf.setframerate(voice.config.sample_rate)
         for chunk in voice.synthesize(text):
             wf.writeframes(chunk.audio_int16_bytes)
-
-    if apply_fx:
-        subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-y", "-i", raw_path,
-             "-af", "volume=1.5,vibrato=f=6:d=0.025,aecho=0.8:0.9:4:0.28",
-             fx_path],
-            check=True,
-        )
-        out = fx_path
-    else:
-        out = raw_path
-
-    with wave.open(out) as wf:
-        return wf.getnframes() / wf.getframerate(), out
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", raw,
+         "-af", "volume=1.5,vibrato=f=6:d=0.025,aecho=0.8:0.9:4:0.28",
+         cache_path],
+        check=True,
+    )
+    Path(raw).unlink(missing_ok=True)
+    with wave.open(cache_path) as wf:
+        return wf.getnframes() / wf.getframerate(), cache_path
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +241,9 @@ def speak_and_animate(mini, audio_path: str, audio_duration: float):
 def main():
     print("Network School Greeter")
 
-    print("  Generating speech...")
-    audio_duration, audio_path = synth(GREETING, WAV_RAW, WAV_FX, ROBOT_VOICE_FX)
-    print(f"  Audio: {audio_duration:.1f} s  (robot-fx={'on' if ROBOT_VOICE_FX else 'off'})")
+    print("  Loading speech...")
+    audio_duration, audio_path = synth_cached(GREETING, CACHE_WAV)
+    print(f"  Audio: {audio_duration:.1f} s")
 
     print("  >>> RECORD CUE: 3 beeps — hit record now! <<<")
     record_cue()
