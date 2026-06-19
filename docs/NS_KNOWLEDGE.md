@@ -154,6 +154,27 @@ NS is the human community. Ârc is the economic operating system underneath it. 
 
 ---
 
+## Quantus Protocol (quantus.com)
+
+**What it is:** Quantus is a Layer 1 blockchain built from scratch to be resistant to quantum computing attacks — "the blockchain quantum computers can't break."
+
+**The problem it solves:** Bitcoin, Ethereum, and Solana all use ECDSA-256 or ED25519 cryptography. A sufficiently powerful quantum computer (~2,400 logical qubits) could break these algorithms and drain wallets. The crypto industry holds $3 trillion with zero quantum defense. "Q-Day" is the term for the moment this becomes real.
+
+**Technology:**
+- **ML-DSA Dilithium-5** — post-quantum cryptographic standard, NIST FIPS 204 certified (the gold standard for quantum resistance)
+- **Recursive STARKs** — zero-knowledge proofs for scalability, achieving 50 QTPS
+- **Clean-slate Layer 1** — not retrofitting an existing chain; built quantum-safe from day one
+- 247 active validators
+
+**Products:**
+- Mobile wallet (iOS/Android) — public beta
+- Network Explorer dashboard
+- Q-Day Checker tool — assess how vulnerable your current crypto is
+
+**Why Reachy cares:** Quantus is exactly the kind of infrastructure play that NS builders love — it's not incremental, it's a bet on the future. If quantum computers are coming, the time to build quantum-safe money is now, not after Q-Day. It aligns with NS's techno-optimism and Balaji's thesis that decentralised, sovereign money must be defended.
+
+---
+
 ## NS Community People
 
 ### Veronica — Core Team, Chinese Language
