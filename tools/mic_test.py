@@ -17,7 +17,7 @@ if not key:
     raise SystemExit("GROQ_API_KEY not found in .env")
 client = Groq(api_key=key)
 
-MIC = "plughw:CARD=Camera,DEV=0"
+MIC = "default"   # PipeWire routes to Pollen Robotics Audio input (the robot mic)
 
 SPEAKER = "plughw:CARD=Audio,DEV=0"
 
