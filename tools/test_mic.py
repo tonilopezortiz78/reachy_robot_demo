@@ -1,62 +1,72 @@
 #!/usr/bin/env python3
 """
-Test every capture device via PipeWire (parecord).
-For each device: records 3s, shows volume, plays back on robot speaker.
-SPEAK CLEARLY during each 3-second window.
+Test capture devices one at a time. Beeps before each recording.
+SPEAK after the beep. Plays back on robot speaker.
 """
-import subprocess, tempfile, time
+import subprocess, tempfile, time, sys
 from pathlib import Path
 
 SPEAKER = "plughw:CARD=Audio,DEV=0"
-DURATION = 3
 
-# PipeWire source names (use parecord, not arecord+plughw)
 DEVICES = [
     ("alsa_input.usb-Pollen_Robotics_Reachy_Mini_Audio_100025004254700094-00.analog-stereo",
-     "Reachy Mini Audio mic (robot body)"),
+     "1 — Reachy body mic"),
     ("alsa_input.usb-SunplusIT_Inc_Reachy_Mini_Camera_J20251031V0-02.analog-stereo",
-     "Reachy Mini Camera mic (robot head)"),
+     "2 — Reachy camera mic"),
     ("alsa_input.pci-0000_00_1f.3.analog-stereo",
-     "Laptop built-in mic"),
+     "3 — Laptop built-in mic"),
 ]
 
-for dev, label in DEVICES:
-    wav = tempfile.mktemp(suffix=".wav")
-    print(f"\n{'='*60}")
-    print(f"Label  : {label}")
-    print(f"Device : {dev[:60]}")
-    print(f"SPEAK NOW — recording {DURATION}s ...")
+def beep():
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i", "aevalsrc=0.5*sin(1000*2*PI*t):c=mono:s=22050",
+         "-t", "0.3", "-f", "alsa", SPEAKER],
+        check=False,
+    )
 
+for dev, label in DEVICES:
+    print(f"\n{'='*50}")
+    print(f"Testing: {label}")
+    print("Beep → SPEAK for 5 seconds → playback")
+    time.sleep(1)
+
+    beep()
+    time.sleep(0.2)
+
+    wav = tempfile.mktemp(suffix=".wav")
+    print("Recording... speak now!")
     proc = subprocess.Popen(
         ["parecord", f"--device={dev}",
          "--channels=1", "--rate=16000", "--format=s16le", wav],
         stderr=subprocess.DEVNULL,
     )
-    time.sleep(DURATION)
+    time.sleep(5)
     proc.terminate()
     proc.wait()
 
-    if not Path(wav).exists() or Path(wav).stat().st_size < 100:
-        print("  FAILED — no audio captured")
+    if not Path(wav).exists() or Path(wav).stat().st_size < 1000:
+        print("  FAILED — no audio")
         time.sleep(0.5)
         continue
 
-    size = Path(wav).stat().st_size
     vol = subprocess.run(
         ["ffmpeg", "-i", wav, "-af", "volumedetect", "-f", "null", "/dev/null"],
         capture_output=True, text=True,
     )
-    max_vol = "[no data]"
     for line in vol.stderr.splitlines():
         if "max_volume" in line:
-            max_vol = line.strip()
+            print(f"  {line.strip()}")
 
-    print(f"  Size   : {size} bytes")
-    print(f"  Volume : {max_vol}")
-    print(f"  Playing back on robot speaker ...")
+    print("  Playing back on robot speaker ...")
+    beep()
+    time.sleep(0.2)
     subprocess.run(["aplay", "-D", SPEAKER, "-q", wav], capture_output=True)
-    print("  Done.")
+    print("  Done. Did you hear your voice? (check terminal)")
     Path(wav).unlink(missing_ok=True)
-    time.sleep(1)
 
-print("\n\nDone. Tell me which playback had your voice.")
+    cont = input("  Press Enter for next device (or q to quit): ").strip()
+    if cont.lower() == "q":
+        break
+
+print("\nDone.")
