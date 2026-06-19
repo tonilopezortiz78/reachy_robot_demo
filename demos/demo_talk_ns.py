@@ -188,7 +188,7 @@ def boot_beeps():
 
 def listening_ping():
     """Soft tick while waiting for someone to speak."""
-    chirp(500, 1200, 0.09, vol=0.35, block=True)
+    chirp(500, 1200, 0.09, vol=0.35, block=False)
 
 def your_turn_chime():
     """Clear 3-note rising signal: robot finished, your turn to speak."""
@@ -312,13 +312,13 @@ def record_utterance(vad_model):
                            threshold=SPEECH_THRESH,
                            min_silence_duration_ms=SILENCE_END_MS)
 
-    print("  Listening...", end="", flush=True)
-    listening_ping()   # must complete before arecord opens (same ALSA device)
-
     arecord = subprocess.Popen(
         ["arecord", "-D", MIC, "-f", "S16_LE", "-r", str(MIC_RATE), "-c", "1", "-q"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
+
+    print("  Listening...", end="", flush=True)
+    listening_ping()
 
     speech_buf  = []
     in_speech   = False

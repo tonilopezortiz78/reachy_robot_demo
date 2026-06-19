@@ -357,13 +357,13 @@ def record_utterance(vad_model):
                            threshold=SPEECH_THRESH,
                            min_silence_duration_ms=SILENCE_END_MS)
 
-    print("  Listening...", end="", flush=True)
-    listening_ping()   # must complete before arecord opens (same ALSA device)
-
     arecord = subprocess.Popen(
         ["arecord", "-D", MIC, "-f", "S16_LE", "-r", str(MIC_RATE), "-c", "1", "-q"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
+
+    print("  Listening...", end="", flush=True)
+    listening_ping()
 
     speech_buf = []
     in_speech  = False
