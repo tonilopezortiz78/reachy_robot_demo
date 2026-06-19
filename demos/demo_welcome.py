@@ -13,7 +13,6 @@ Voice processing:
   the raw Piper voice.
 """
 import math
-import socket
 import subprocess
 import time
 import wave
@@ -23,6 +22,8 @@ from piper import PiperVoice
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
+
+from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
 
 ROOT            = Path(__file__).parent.parent
 VOICE_PATH      = str(ROOT / "voices" / "en_US-amy-medium.onnx")
@@ -134,19 +135,6 @@ def synth_cached(text: str, cache_path: str) -> tuple[float, str]:
 # Daemon
 # ---------------------------------------------------------------------------
 
-def start_daemon():
-    proc = subprocess.Popen(
-        ["reachy-mini-daemon", "--no-media"],
-        start_new_session=True,
-    )
-    for _ in range(30):
-        time.sleep(0.5)
-        try:
-            with socket.create_connection(("127.0.0.1", 8000), timeout=0.3):
-                return proc
-        except OSError:
-            pass
-    raise RuntimeError("Daemon did not start within 15 s")
 
 
 # ---------------------------------------------------------------------------
@@ -245,9 +233,11 @@ def main():
     audio_duration, audio_path = synth_cached(GREETING, CACHE_WAV)
     print(f"  Audio: {audio_duration:.1f} s")
 
+    daemon_proc = launch_daemon()           # start now — boot sounds take ~7 s
+
     print("  >>> RECORD CUE: 3 beeps — hit record now! <<<")
     record_cue()
-    time.sleep(1.0)   # 1 s after last beep before anything moves
+    time.sleep(1.0)
 
     print("  Boot sequence...")
     boot_sequence()
@@ -256,9 +246,7 @@ def main():
     print("  Starting in 3 s...")
     time.sleep(3.0)
 
-    print("  Starting daemon...")
-    daemon_proc = start_daemon()
-    print("  Daemon ready.")
+    wait_for_daemon(daemon_proc)           # almost certainly already up by now
 
     try:
         emotions = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
@@ -293,12 +281,7 @@ def main():
             print("  Done.")
 
     finally:
-        daemon_proc.terminate()
-        try:
-            daemon_proc.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            daemon_proc.kill()
-            daemon_proc.wait()
+        stop_daemon(daemon_proc)
 
 
 if __name__ == "__main__":

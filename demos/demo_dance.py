@@ -19,7 +19,7 @@ from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
 
-from reachy_demo.daemon import start_daemon, stop_daemon
+from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
 from reachy_demo.tts_edge import synth_to_file
 
 ROOT             = Path(__file__).parent.parent
@@ -243,15 +243,15 @@ def main():
     tease_dur, WAV_TEASE = _get_or_synth(TEASER,   CACHE_TEASE)
     print(f"  Greeting: {greet_dur:.1f}s   Teaser: {tease_dur:.1f}s")
 
+    daemon_proc = launch_daemon()           # start now — record cue + boot take ~5 s
+
     print("\n  >>> RECORD CUE — hit record! <<<")
     record_cue()
 
-    # Boot immediately after cue — no gap
     print("  Boot sequence...")
     boot_sequence()
 
-    print("  Starting daemon...")
-    daemon_proc = start_daemon()
+    wait_for_daemon(daemon_proc)           # almost certainly already up by now
 
     try:
         em = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")

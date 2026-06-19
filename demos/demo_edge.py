@@ -26,7 +26,7 @@ from reachy_demo.audio import (
     boot_beeps, chirp, error_chime, pcm_to_wav_bytes, record_utterance,
     speaking_chime, thinking_blips, your_turn_chime,
 )
-from reachy_demo.daemon import start_daemon, stop_daemon
+from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
 from reachy_demo.groq_client import load_api_key, transcribe
 from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_edge import play_wav_blocking, synth_to_file
@@ -202,12 +202,12 @@ def stream_and_speak(client, history: list, user_text: str, anim) -> str:
 
 def main():
     print("Reachy NS Ambassador Demo — edge-tts voice")
-    print("  Loading VAD model...")
-    vad_model = load_silero_vad()
-    client    = Groq(api_key=GROQ_KEY)
-
     print("  Starting daemon...")
-    daemon_proc = start_daemon()
+    daemon_proc = launch_daemon()           # non-blocking — starts in background
+    print("  Loading VAD model...")
+    vad_model = load_silero_vad()           # ~2 s — overlaps with daemon startup
+    client    = Groq(api_key=GROQ_KEY)
+    wait_for_daemon(daemon_proc)            # wait for remainder (usually already up)
 
     try:
         with ReachyMini(connection_mode="localhost_only",

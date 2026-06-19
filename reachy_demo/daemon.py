@@ -6,21 +6,31 @@ import subprocess
 import time
 
 
-def start_daemon() -> subprocess.Popen:
-    """Kill any existing daemon, start a fresh one, and wait until port 8000 is up."""
+def launch_daemon() -> subprocess.Popen:
+    """Kill any existing daemon and start a fresh one. Returns immediately — not ready yet."""
     subprocess.run(["pkill", "-9", "-f", "reachy-mini-daemon"], check=False)
     time.sleep(0.3)
-    proc = subprocess.Popen(
+    return subprocess.Popen(
         ["reachy-mini-daemon", "--no-media"], start_new_session=True,
     )
-    for _ in range(30):
-        time.sleep(0.5)
+
+
+def wait_for_daemon(proc: subprocess.Popen, timeout: float = 20.0) -> subprocess.Popen:
+    """Block until port 8000 is listening (or timeout)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.1)
         try:
             with socket.create_connection(("127.0.0.1", 8000), timeout=0.3):
                 return proc
         except OSError:
             pass
-    raise RuntimeError("Daemon did not start within 15 s")
+    raise RuntimeError(f"Daemon did not start within {timeout:.0f} s")
+
+
+def start_daemon() -> subprocess.Popen:
+    """Kill any existing daemon, start a fresh one, and wait until port 8000 is up."""
+    return wait_for_daemon(launch_daemon())
 
 
 def stop_daemon(proc: subprocess.Popen) -> None:
