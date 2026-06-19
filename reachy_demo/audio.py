@@ -57,37 +57,54 @@ def chirp(f0, f1, dur, vol=0.45, block=True):
 # ── Named sound effects ───────────────────────────────────────────────────────
 
 def boot_beeps():
-    for f, d in [(300, 0.07), (500, 0.06), (750, 0.07), (1100, 0.06), (1600, 0.05)]:
-        blip(f, d, 0.38, block=True)
-        time.sleep(0.03)
-    time.sleep(0.04)
-    blip(2000, 0.06, 0.42, block=True)
+    """R2-D2-style startup — ascending sequence + happy double-blip."""
+    for f, d, v in [(280, 0.06, 0.35), (420, 0.06, 0.37), (600, 0.07, 0.40),
+                    (850, 0.07, 0.42), (1100, 0.06, 0.44), (1500, 0.07, 0.46)]:
+        blip(f, d, v, block=True)
+        time.sleep(0.025)
+    time.sleep(0.06)
+    chirp(800, 1800, 0.12, vol=0.50, block=True)
+    time.sleep(0.03)
+    blip(2200, 0.05, 0.45, block=True)
+    time.sleep(0.02)
+    blip(2200, 0.05, 0.45, block=True)
 
 
 def listening_ping():
-    """Soft tick while waiting for someone to speak."""
-    chirp(500, 1200, 0.09, vol=0.35, block=False)
+    """Soft rising tick — robot is awake and listening."""
+    chirp(600, 1400, 0.08, vol=0.38, block=False)
 
 
 def your_turn_chime():
-    """Clear 3-note rising signal: robot finished, your turn to speak."""
-    for f in [600, 900, 1400]:
-        blip(f, 0.07, 0.55, block=True)
-        time.sleep(0.05)
+    """4-note rising fanfare: robot finished, your turn."""
+    for f, d in [(550, 0.06), (750, 0.06), (1050, 0.07), (1500, 0.09)]:
+        blip(f, d, 0.52, block=True)
+        time.sleep(0.04)
+    time.sleep(0.02)
+    chirp(1500, 900, 0.07, vol=0.30, block=True)
 
 
 def thinking_blips():
-    for f in [700, 550, 400]:
-        blip(f, 0.05, 0.25, block=True)
-        time.sleep(0.04)
+    """4 descending blips + 1 ascending — 'computing' feel."""
+    for f in [900, 720, 560, 420]:
+        blip(f, 0.05, 0.22, block=True)
+        time.sleep(0.035)
+    time.sleep(0.02)
+    blip(650, 0.06, 0.28, block=True)
 
 
 def speaking_chime():
-    blip(900, 0.06, 0.28, block=True)
+    """3-note happy little 'I have something to say!' sequence."""
+    for f, d in [(700, 0.05), (1000, 0.05), (1400, 0.07)]:
+        blip(f, d, 0.38, block=True)
+        time.sleep(0.03)
 
 
 def error_chime():
-    chirp(400, 180, 0.25, vol=0.30, block=True)
+    """Sad descending wobble."""
+    chirp(500, 220, 0.28, vol=0.32, block=True)
+    time.sleep(0.04)
+    blip(200, 0.10, 0.25, block=True)
 
 # ── WAV playback ──────────────────────────────────────────────────────────────
 

@@ -78,16 +78,19 @@ def record_cue():
 
 def boot_sequence():
     """Ascending R2-D2-style startup chirps."""
-    chirp(300, 900, 0.18)
-    time.sleep(0.06)
-    chirp(600, 1400, 0.14)
+    chirp(280, 800, 0.16)
     time.sleep(0.04)
-    chirp(900, 400, 0.20)     # descending swoosh
-    time.sleep(0.05)
-    # Double affirmative blip
-    blip(1200, 0.06)
+    chirp(550, 1300, 0.14)
+    time.sleep(0.03)
+    chirp(900, 400, 0.18)
     time.sleep(0.04)
-    blip(1600, 0.06)
+    chirp(700, 1600, 0.12)
+    time.sleep(0.03)
+    blip(1800, 0.05)
+    time.sleep(0.02)
+    blip(2200, 0.06)
+    time.sleep(0.02)
+    blip(2200, 0.05)
 
 
 def ready_blip():
@@ -164,25 +167,25 @@ def start_daemon():
 
 STYLES = {
     "welcome": dict(
-        ph=(0.14, 0.50), ph2=(0.05, 1.31),
-        ya=(0.22, 0.31), ya2=(0.07, 0.73),
-        ro=(0.07, 0.19), ro2=(0.03, 0.53),
-        an=(0.55, 0.61), an2=(0.15, 1.17),
-        by=(0.10, 0.17), by2=(0.03, 0.41),
+        ph=(0.18, 0.50), ph2=(0.07, 1.31),
+        ya=(0.28, 0.31), ya2=(0.10, 0.73),
+        ro=(0.10, 0.19), ro2=(0.04, 0.53),
+        an=(0.70, 0.61), an2=(0.22, 1.17),
+        by=(0.18, 0.17), by2=(0.05, 0.41),
     ),
     "talk": dict(
-        ph=(0.10, 0.50), ph2=(0.04, 1.27),
-        ya=(0.18, 0.27), ya2=(0.05, 0.71),
-        ro=(0.05, 0.15), ro2=(0.02, 0.43),
-        an=(0.42, 0.55), an2=(0.12, 1.09),
-        by=(0.07, 0.13), by2=(0.02, 0.37),
+        ph=(0.14, 0.50), ph2=(0.06, 1.27),
+        ya=(0.24, 0.27), ya2=(0.08, 0.71),
+        ro=(0.07, 0.15), ro2=(0.03, 0.43),
+        an=(0.58, 0.55), an2=(0.18, 1.09),
+        by=(0.14, 0.13), by2=(0.04, 0.37),
     ),
     "curious": dict(
-        ph=(0.08, 0.35), ph2=(0.03, 0.89),
-        ya=(0.20, 0.21), ya2=(0.06, 0.59),
-        ro=(0.12, 0.29), ro2=(0.04, 0.67),
-        an=(0.32, 0.43), an2=(0.10, 0.97),
-        by=(0.05, 0.11), by2=(0.02, 0.31),
+        ph=(0.12, 0.35), ph2=(0.05, 0.89),
+        ya=(0.26, 0.21), ya2=(0.09, 0.59),
+        ro=(0.16, 0.29), ro2=(0.06, 0.67),
+        an=(0.48, 0.43), an2=(0.15, 0.97),
+        by=(0.10, 0.11), by2=(0.03, 0.31),
     ),
 }
 
@@ -228,7 +231,7 @@ def speak_and_animate(mini, audio_path: str, audio_duration: float):
                 roll=_wave(c, "ro", t),
                 degrees=False,
             ),
-            antennas=[_wave(c, "an", t), -_wave(c, "an", t)],
+            antennas=[_wave(c, "an", t), -_wave(c, "an", t) * 0.7],
             body_yaw=_wave(c, "by", t),
         )
         time.sleep(1.0 / hz)

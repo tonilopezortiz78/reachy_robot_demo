@@ -20,10 +20,10 @@ def _s(amp, freq, t, phase=0.0):
     return amp * math.sin(2 * math.pi * freq * t + phase)
 
 
-def _send(mini, p, y, r, by, ant):
+def _send(mini, p, y, r, by, ant_l, ant_r):
     mini.set_target(
         head=create_head_pose(pitch=p, yaw=y, roll=r, degrees=False),
-        antennas=[ant, ant], body_yaw=by,
+        antennas=[ant_l, ant_r], body_yaw=by,
     )
 
 # ── Animator class ────────────────────────────────────────────────────────────
@@ -61,40 +61,44 @@ class Animator:
                 state = self.state
             try:
                 if state == self.IDLE:
-                    # gentle ambient sway
-                    p  =  0.05 + _s(0.05, 0.28, t) + _s(0.02, 0.67, t)
-                    y  =  _s(0.18, 0.22, t) + _s(0.06, 0.53, t)
-                    r  =  _s(0.04, 0.17, t)
-                    by =  _s(0.12, 0.13, t)
-                    a  =  0.10 + _s(0.10, 0.35, t)
-                    _send(self.mini, p, y, r, by, a)
+                    # gentle ambient sway — slightly asymmetric antennas
+                    p  =  0.05 + _s(0.06, 0.28, t) + _s(0.02, 0.67, t)
+                    y  =  _s(0.20, 0.22, t) + _s(0.07, 0.53, t)
+                    r  =  _s(0.06, 0.17, t) + _s(0.02, 0.41, t)
+                    by =  _s(0.15, 0.13, t) + _s(0.04, 0.31, t)
+                    al =  0.20 + _s(0.15, 0.35, t)
+                    ar =  0.20 + _s(0.15, 0.35, t, phase=1.2)
+                    _send(self.mini, p, y, r, by, al, ar)
 
                 elif state == self.LISTENING:
-                    # head tilted, antennas perked, scanning gently
-                    p  =  0.10 + _s(0.04, 0.42, t)
-                    y  =  _s(0.22, 0.35, t) + _s(0.08, 0.79, t)
-                    r  =  0.08 + _s(0.04, 0.31, t)
-                    by =  _s(0.14, 0.18, t)
-                    a  =  0.60 + _s(0.12, 0.47, t)
-                    _send(self.mini, p, y, r, by, a)
+                    # head tilted, antennas perked with alternating flutter
+                    p  =  0.12 + _s(0.05, 0.40, t)
+                    y  =  _s(0.26, 0.35, t) + _s(0.09, 0.79, t)
+                    r  =  0.10 + _s(0.05, 0.29, t)
+                    by =  _s(0.18, 0.18, t) + _s(0.05, 0.43, t)
+                    al =  0.65 + _s(0.18, 0.50, t)
+                    ar =  0.35 + _s(0.18, 0.50, t, phase=math.pi)
+                    _send(self.mini, p, y, r, by, al, ar)
 
                 elif state == self.THINKING:
-                    # small rapid head nods, antennas wiggle
-                    p  = -0.05 + _s(0.06, 1.40, t) + _s(0.02, 2.30, t)
-                    y  =  _s(0.12, 0.90, t) + _s(0.05, 1.70, t)
-                    r  =  _s(0.05, 1.20, t)
-                    by =  _s(0.08, 0.55, t)
-                    a  =  0.30 + _s(0.18, 1.50, t)
-                    _send(self.mini, p, y, r, by, a)
+                    # quick head nods + rapid antenna alternation (computing feel)
+                    p  = -0.05 + _s(0.07, 1.40, t) + _s(0.03, 2.30, t)
+                    y  =  _s(0.14, 0.90, t) + _s(0.06, 1.70, t)
+                    r  =  _s(0.06, 1.20, t) + _s(0.02, 2.10, t)
+                    by =  _s(0.10, 0.55, t)
+                    al =  0.45 + _s(0.30, 1.80, t)
+                    ar =  0.45 + _s(0.30, 1.80, t, phase=math.pi)
+                    _send(self.mini, p, y, r, by, al, ar)
 
                 elif state == self.SPEAKING:
-                    # animated talking motion
-                    p  =  0.08 + _s(0.08, 0.50, t) + _s(0.03, 1.23, t)
-                    y  =  _s(0.22, 0.38, t) + _s(0.08, 0.87, t)
-                    r  =  _s(0.06, 0.27, t) + _s(0.02, 0.63, t)
-                    by =  _s(0.28, 0.22, t) + _s(0.08, 0.51, t)
-                    a  =  0.35 + _s(0.20, 0.65, t)
-                    _send(self.mini, p, y, r, by, a)
+                    # expressive talking — big head bobs, antennas flapping enthusiastically
+                    p  =  0.08 + _s(0.10, 0.50, t) + _s(0.04, 1.23, t)
+                    y  =  _s(0.26, 0.38, t) + _s(0.10, 0.87, t)
+                    r  =  _s(0.08, 0.27, t) + _s(0.03, 0.63, t)
+                    by =  _s(0.35, 0.22, t) + _s(0.10, 0.51, t)
+                    al =  0.40 + _s(0.35, 0.65, t)
+                    ar =  0.40 + _s(0.35, 0.65, t, phase=math.pi * 0.6)
+                    _send(self.mini, p, y, r, by, al, ar)
 
                 consecutive_errors = 0
 
