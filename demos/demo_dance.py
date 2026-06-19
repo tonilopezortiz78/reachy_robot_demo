@@ -12,7 +12,7 @@ Run:  ./run.sh demos/demo_dance.py
 import math
 import subprocess
 import time
-import wave
+import wave as _wave
 from pathlib import Path
 
 from reachy_mini import ReachyMini
@@ -76,16 +76,9 @@ def excited_chirp():
     time.sleep(0.04)
     chirp(800, 2200, 0.12, vol=0.85)
 
-# ---------------------------------------------------------------------------
-# TTS
-# ---------------------------------------------------------------------------
-
-def synth(text: str):
-    """Synthesise text via edge-tts. Returns (duration_s, wav_path)."""
-    path = synth_to_file(text)
-    with wave.open(path) as wf:
-        duration = wf.getnframes() / wf.getframerate()
-    return duration, path
+def _wav_duration(path: str) -> float:
+    with _wave.open(path) as wf:
+        return wf.getnframes() / wf.getframerate()
 
 # ---------------------------------------------------------------------------
 # Greeting animation (layered sine waves — looks organic)
@@ -232,8 +225,10 @@ def main():
     print("Network School — Macarena Show")
 
     print("  Generating speech...")
-    greet_dur, WAV_GREET = synth(GREETING)
-    tease_dur, WAV_TEASE = synth(TEASER)
+    WAV_GREET = synth_to_file(GREETING)
+    WAV_TEASE = synth_to_file(TEASER)
+    greet_dur = _wav_duration(WAV_GREET)
+    tease_dur = _wav_duration(WAV_TEASE)
     print(f"  Greeting: {greet_dur:.1f}s   Teaser: {tease_dur:.1f}s")
 
     print("\n  >>> RECORD CUE — hit record! <<<")

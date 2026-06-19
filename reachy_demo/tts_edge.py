@@ -51,12 +51,14 @@ def _ssml(text: str, voice: str, rate: str, pitch: str, style: str) -> str:
     )
 
 
+_TTS_TIMEOUT = 30.0   # seconds per attempt — first call opens a WebSocket, can be slow
+
 async def _edge_synth_coro(text: str, mp3_path: str, voice: str, rate: str,
                             pitch: str, style: str | None = None):
     content = _ssml(text, voice, rate, pitch, style) if style else text
     tts = _edge_tts_mod.Communicate(content) if style else \
           _edge_tts_mod.Communicate(text, voice=voice, rate=rate, pitch=pitch)
-    await asyncio.wait_for(tts.save(mp3_path), timeout=10.0)
+    await asyncio.wait_for(tts.save(mp3_path), timeout=_TTS_TIMEOUT)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -65,6 +67,7 @@ def synth_to_file(text: str) -> str:
     Synthesise text via edge-tts, resample to 48kHz WAV, return temp path.
     Caller must delete the returned file.
     Language is auto-detected: Chinese → CHINESE_VOICE, else ENGLISH_VOICE.
+    Retries once on timeout (first call opens a WebSocket and can be slow).
     """
     mp3 = tempfile.mktemp(suffix=".mp3")
     out = tempfile.mktemp(suffix=".wav")
@@ -72,11 +75,20 @@ def synth_to_file(text: str) -> str:
         voice, rate, pitch, style, vol = CHINESE_VOICE, "-18%", "+0Hz", None, "2.2"
     else:
         voice, rate, pitch, style, vol = ENGLISH_VOICE, "+20%", "+8Hz", ENGLISH_STYLE, "2.0"
+    for attempt in range(2):
+        Path(mp3).unlink(missing_ok=True)
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                _edge_synth_coro(text, mp3, voice, rate, pitch, style), _tts_loop
+            )
+            future.result(timeout=_TTS_TIMEOUT + 3)
+            break
+        except (TimeoutError, Exception) as e:
+            if attempt == 1:
+                Path(mp3).unlink(missing_ok=True)
+                raise
+            print(f"  [TTS] retry after: {e}")
     try:
-        future = asyncio.run_coroutine_threadsafe(
-            _edge_synth_coro(text, mp3, voice, rate, pitch, style), _tts_loop
-        )
-        future.result(timeout=12.0)
         subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
              "-i", mp3,
