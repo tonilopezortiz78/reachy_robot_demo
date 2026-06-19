@@ -15,6 +15,9 @@ echo "║                                                      ║"
 echo "║  3) Face Tracking     demo_face.py                  ║"
 echo "║     Robot follows your face with its camera         ║"
 echo "║                                                      ║"
+echo "║  4) Lost Brother      demo_lost_friend.py           ║"
+echo "║     Emotional pitch for NS Robotics Club            ║"
+echo "║                                                      ║"
 echo "║  q) Quit                                             ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
@@ -24,6 +27,7 @@ case $choice in
   1) ./run.sh demos/demo_welcome.py ;;
   2) ./run.sh demos/demo_dance.py ;;
   3) ./run.sh demos/demo_face.py ;;
+  4) ./run.sh demos/demo_lost_friend.py ;;
   q|Q) echo "bye"; exit 0 ;;
   *) echo "Unknown choice."; exit 1 ;;
 esac
