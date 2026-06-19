@@ -16,6 +16,7 @@ music/macarena.mp3
 # Generated/recorded files
 recordings/
 audio/
+cache/
 *.raw.wav
 *.log
 .env

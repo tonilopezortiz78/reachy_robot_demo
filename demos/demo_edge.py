@@ -140,7 +140,7 @@ def stream_and_speak(client, history: list, user_text: str, anim) -> str:
         model=MODEL,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
         max_tokens=70,
-        temperature=0.85,
+        temperature=0.90,
         stream=True,
     )
 

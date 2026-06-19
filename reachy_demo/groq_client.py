@@ -64,7 +64,7 @@ def stream_chat(
         model=model,
         messages=[{"role": "system", "content": system}] + messages,
         max_tokens=70,
-        temperature=0.85,
+        temperature=0.90,
         stream=True,
     )
     for chunk in stream:

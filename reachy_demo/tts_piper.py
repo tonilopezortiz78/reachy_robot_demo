@@ -28,7 +28,7 @@ def synth_to_file(voice: PiperVoice, text: str) -> str:
     Synthesise text with Piper, apply FX chain, return temp WAV path.
     Caller is responsible for deleting the returned file.
 
-    FX chain: asetrate *1.10, atempo=1.12, volume=2.0,
+    FX chain: asetrate *1.10, atempo=1.20, volume=2.5,
               vibrato=f=4.0:d=0.04, aecho=0.88:0.90:16:0.30
     """
     sr  = voice.config.sample_rate
@@ -62,7 +62,7 @@ def synth_and_play(voice: PiperVoice, text: str) -> float:
     Synthesise text with Piper, apply FX chain, play on robot speaker.
     Returns duration in seconds. Blocks until playback is done.
 
-    FX chain: asetrate *1.10, atempo=1.04, volume=2.0,
+    FX chain: asetrate *1.10, atempo=1.12, volume=2.5,
               vibrato=f=4.0:d=0.04, aecho=0.88:0.90:18:0.35
     """
     sr = voice.config.sample_rate

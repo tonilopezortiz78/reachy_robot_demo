@@ -30,6 +30,12 @@ ENGLISH_VOICE = "en-US-AnaNeural"   # child voice — naturally high-pitched and
 # the best choice for a robot that needs to be understood in a noisy event space.
 CHINESE_VOICE = "zh-CN-YunyangNeural"
 
+# TTS tuning — snappier pace + louder output
+# Rate: % offset from natural (positive = faster, negative = slower)
+# Vol:  ffmpeg volume multiplier (1.0 = unity, 2.0 = +6 dB, 2.5 = +8 dB)
+ENGLISH_RATE, ENGLISH_PITCH, ENGLISH_VOL = "+30%", "+8Hz", "2.5"
+CHINESE_RATE, CHINESE_PITCH, CHINESE_VOL = "+5%",  "+8Hz", "2.5"
+
 # ── Persistent event loop ─────────────────────────────────────────────────────
 
 _tts_loop   = asyncio.new_event_loop()
@@ -59,9 +65,9 @@ def synth_to_file(text: str) -> str:
     mp3 = tempfile.mktemp(suffix=".mp3")
     out = tempfile.mktemp(suffix=".wav")
     if _is_chinese(text):
-        voice, rate, pitch, vol = CHINESE_VOICE, "-18%", "+0Hz", "2.2"
+        voice, rate, pitch, vol = CHINESE_VOICE, CHINESE_RATE, CHINESE_PITCH, CHINESE_VOL
     else:
-        voice, rate, pitch, vol = ENGLISH_VOICE, "+20%", "+8Hz", "2.0"
+        voice, rate, pitch, vol = ENGLISH_VOICE, ENGLISH_RATE, ENGLISH_PITCH, ENGLISH_VOL
     snippet = text[:50].replace("\n", " ")
     try:
         t0 = time.time()
