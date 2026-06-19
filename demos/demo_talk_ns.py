@@ -37,7 +37,7 @@ from reachy_mini.utils import create_head_pose
 ROOT       = Path(__file__).parent.parent
 VOICE_PATH = str(ROOT / "voices" / "en_US-amy-medium.onnx")
 SPEAKER    = "plughw:CARD=Audio,DEV=0"
-MIC        = "plughw:CARD=Audio,DEV=0"
+MIC        = "plughw:CARD=Camera,DEV=0"
 
 # ── API key ──────────────────────────────────────────────────────────────────
 

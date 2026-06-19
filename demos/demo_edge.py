@@ -36,7 +36,7 @@ from reachy_mini.utils import create_head_pose
 
 ROOT    = Path(__file__).parent.parent
 SPEAKER = "plughw:CARD=Audio,DEV=0"
-MIC     = "plughw:CARD=Audio,DEV=0"
+MIC     = "plughw:CARD=Camera,DEV=0"
 
 ENGLISH_VOICE = "en-US-AriaNeural"
 CHINESE_VOICE = "zh-CN-YunyangNeural"
