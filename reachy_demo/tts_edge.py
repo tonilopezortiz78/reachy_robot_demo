@@ -23,7 +23,7 @@ from reachy_demo.audio import play_wav_blocking  # noqa: F401  (re-export)
 
 # ── Voice constants ───────────────────────────────────────────────────────────
 
-ENGLISH_VOICE = "en-US-AriaNeural"
+ENGLISH_VOICE = "en-US-AnaNeural"   # child voice — naturally high-pitched and cute
 # YunyangNeural is Microsoft's newscast-style Mandarin voice.
 # Newscast voices are trained with explicit tone precision and clear articulation —
 # the best choice for a robot that needs to be understood in a noisy event space.
@@ -43,8 +43,8 @@ def _is_chinese(text: str) -> bool:
     return cjk > max(2, len(text) * 0.15)
 
 
-async def _edge_synth_coro(text: str, mp3_path: str, voice: str, rate: str):
-    tts = _edge_tts_mod.Communicate(text, voice=voice, rate=rate)
+async def _edge_synth_coro(text: str, mp3_path: str, voice: str, rate: str, pitch: str):
+    tts = _edge_tts_mod.Communicate(text, voice=voice, rate=rate, pitch=pitch)
     await asyncio.wait_for(tts.save(mp3_path), timeout=10.0)
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -58,12 +58,12 @@ def synth_to_file(text: str) -> str:
     mp3 = tempfile.mktemp(suffix=".mp3")
     out = tempfile.mktemp(suffix=".wav")
     if _is_chinese(text):
-        voice, rate, vol = CHINESE_VOICE, "-18%", "2.2"
+        voice, rate, pitch, vol = CHINESE_VOICE, "-18%", "+0Hz", "2.2"
     else:
-        voice, rate, vol = ENGLISH_VOICE, "-8%", "2.0"
+        voice, rate, pitch, vol = ENGLISH_VOICE, "+0%", "+8Hz", "2.0"
     try:
         future = asyncio.run_coroutine_threadsafe(
-            _edge_synth_coro(text, mp3, voice, rate), _tts_loop
+            _edge_synth_coro(text, mp3, voice, rate, pitch), _tts_loop
         )
         future.result(timeout=12.0)
         subprocess.run(
