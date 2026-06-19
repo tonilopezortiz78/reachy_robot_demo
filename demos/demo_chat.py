@@ -13,6 +13,7 @@ Press Ctrl-C to stop.
 import io
 import math
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -94,6 +95,8 @@ Rules:
 # ── Daemon ───────────────────────────────────────────────────────────────────
 
 def start_daemon():
+    subprocess.run(["pkill", "-9", "-f", "reachy-mini-daemon"], check=False)
+    time.sleep(0.3)
     proc = subprocess.Popen(
         ["reachy-mini-daemon", "--no-media"], start_new_session=True,
     )
@@ -184,6 +187,7 @@ class Animator:
     def _loop(self):
         t = 0.0
         dt = 0.05
+        consecutive_errors = 0
         while not self._stop.is_set():
             with self._lock:
                 state = self.state
@@ -224,11 +228,31 @@ class Animator:
                     a  =  0.35 + _s(0.20, 0.65, t)
                     _send(self.mini, p, y, r, by, a)
 
+                consecutive_errors = 0
+
             except Exception:
-                pass
+                consecutive_errors += 1
+                if consecutive_errors >= 10:
+                    self._stop.set()
+                    break
 
             time.sleep(dt)
             t += dt
+
+# ── Text cleaning ────────────────────────────────────────────────────────────
+
+def clean_for_tts(text: str) -> str:
+    """Strip markdown and roleplay emotes that TTS would read as literal symbols."""
+    text = re.sub(r'\*{1,3}[^*\n]+\*{1,3}', '', text)
+    text = re.sub(r'\*+([^*]+)\*+', r'\1', text)
+    text = re.sub(r'\*+', '', text)
+    text = re.sub(r'_+', '', text)
+    text = re.sub(r'`+', '', text)
+    text = re.sub(r'#+\s*', '', text)
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    text = re.sub(r'^\s*[-•–]\s*', '', text, flags=re.M)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 # ── TTS ──────────────────────────────────────────────────────────────────────
 
@@ -281,13 +305,13 @@ def record_utterance(vad_model):
                            threshold=SPEECH_THRESH,
                            min_silence_duration_ms=SILENCE_END_MS)
 
+    print("  Listening...", end="", flush=True)
+    listening_ping()   # must complete before arecord opens (same ALSA device)
+
     arecord = subprocess.Popen(
         ["arecord", "-D", MIC, "-f", "S16_LE", "-r", str(MIC_RATE), "-c", "1", "-q"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
-
-    print("  Listening...", end="", flush=True)
-    listening_ping()
 
     speech_buf  = []
     in_speech   = False
@@ -443,14 +467,14 @@ def main():
                     # ── Speak ────────────────────────────────────────────
                     anim.set_state(Animator.SPEAKING)
                     speaking_chime()
-                    synth_and_play(voice, reply)
+                    synth_and_play(voice, clean_for_tts(reply))
                     anim.set_state(Animator.IDLE)
 
             except KeyboardInterrupt:
                 print("\n  Stopping...")
-
-            anim.stop()
-            mini.goto_sleep()
+            finally:
+                anim.stop()
+                mini.goto_sleep()
 
     finally:
         daemon_proc.terminate()

@@ -148,6 +148,8 @@ NS Principles:
 # ── Daemon ───────────────────────────────────────────────────────────────────
 
 def start_daemon():
+    subprocess.run(["pkill", "-9", "-f", "reachy-mini-daemon"], check=False)
+    time.sleep(0.3)
     proc = subprocess.Popen(
         ["reachy-mini-daemon", "--no-media"], start_new_session=True,
     )
@@ -186,7 +188,7 @@ def boot_beeps():
 
 def listening_ping():
     """Soft tick while waiting for someone to speak."""
-    chirp(500, 1200, 0.09, vol=0.35, block=False)
+    chirp(500, 1200, 0.09, vol=0.35, block=True)
 
 def your_turn_chime():
     """Clear 3-note rising signal: robot finished, your turn to speak."""
@@ -243,6 +245,7 @@ class Animator:
     def _loop(self):
         t = 0.0
         dt = 0.05
+        consecutive_errors = 0
         while not self._stop.is_set():
             with self._lock:
                 state = self.state
@@ -283,8 +286,13 @@ class Animator:
                     a  =  0.35 + _s(0.20, 0.65, t)
                     _send(self.mini, p, y, r, by, a)
 
+                consecutive_errors = 0
+
             except Exception:
-                pass
+                consecutive_errors += 1
+                if consecutive_errors >= 10:
+                    self._stop.set()
+                    break
 
             time.sleep(dt)
             t += dt
@@ -304,13 +312,13 @@ def record_utterance(vad_model):
                            threshold=SPEECH_THRESH,
                            min_silence_duration_ms=SILENCE_END_MS)
 
+    print("  Listening...", end="", flush=True)
+    listening_ping()   # must complete before arecord opens (same ALSA device)
+
     arecord = subprocess.Popen(
         ["arecord", "-D", MIC, "-f", "S16_LE", "-r", str(MIC_RATE), "-c", "1", "-q"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
-
-    print("  Listening...", end="", flush=True)
-    listening_ping()
 
     speech_buf  = []
     in_speech   = False
@@ -384,7 +392,7 @@ def clean_for_tts(text: str) -> str:
     """Strip markdown and roleplay emotes that TTS would read as literal symbols."""
     # Remove roleplay action/emote markers entirely — *beep*, *smile*, *blush*, etc.
     # These are single-word (no spaces) wrapped in 1-3 asterisks. Remove word too.
-    text = re.sub(r'\*{1,3}\w+\*{1,3}', '', text)
+    text = re.sub(r'\*{1,3}[^*\n]+\*{1,3}', '', text)
     # Strip remaining asterisks from bold/italic (**text** → text, *text* → text)
     text = re.sub(r'\*+([^*]+)\*+', r'\1', text)
     text = re.sub(r'\*+', '', text)
@@ -410,20 +418,22 @@ def _synth_to_file(voice, text: str) -> str:
         wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
         for chunk in voice.synthesize(text):
             wf.writeframes(chunk.audio_int16_bytes)
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-i", raw,
-         "-af", (
-             f"asetrate={sr}*1.10,"
-             "atempo=1.12,"          # faster than before
-             "volume=2.0,"
-             "vibrato=f=4.0:d=0.04,"
-             "aecho=0.88:0.90:16:0.30"
-         ),
-         out],
-        check=True,
-    )
-    Path(raw).unlink(missing_ok=True)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-i", raw,
+             "-af", (
+                 f"asetrate={sr}*1.10,"
+                 "atempo=1.12,"          # faster than before
+                 "volume=2.0,"
+                 "vibrato=f=4.0:d=0.04,"
+                 "aecho=0.88:0.90:16:0.30"
+             ),
+             out],
+            check=True,
+        )
+    finally:
+        Path(raw).unlink(missing_ok=True)
     return out
 
 def _is_chinese(text: str) -> bool:
@@ -437,7 +447,7 @@ async def _edge_tts_synth(text: str, out_wav: str, voice="zh-CN-YunyangNeural"):
     mp3 = out_wav + ".mp3"
     # rate="-18%" — noticeably slower delivery so each tone is clear and distinct
     tts = edge_tts.Communicate(text, voice=voice, rate="-18%")
-    await tts.save(mp3)
+    await asyncio.wait_for(tts.save(mp3), timeout=10.0)
     # Resample to 48kHz with high-quality SWR before handing to ALSA.
     # This is critical for Mandarin: ALSA's on-the-fly resampling from 24→48kHz
     # can introduce subtle pitch artefacts that smear tonal distinctions.
@@ -488,50 +498,55 @@ def stream_and_speak(client, voice, history: list, user_text: str, anim) -> str:
     buffer    = ""
     full_text = ""
     wavs      = []   # temp files to clean up
+    spoke     = False
 
     SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
 
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content or ""
-        buffer    += delta
-        full_text += delta
+    try:
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            buffer    += delta
+            full_text += delta
 
-        # Flush complete sentences immediately
-        parts = SENTENCE_END.split(buffer)
-        if len(parts) > 1:
-            # All parts except the last are complete sentences
-            for sentence in parts[:-1]:
-                sentence = clean_for_tts(sentence)
-                if not sentence:
-                    continue
-                anim.set_state(Animator.SPEAKING)
+            # Flush complete sentences immediately
+            parts = SENTENCE_END.split(buffer)
+            if len(parts) > 1:
+                # All parts except the last are complete sentences
+                for sentence in parts[:-1]:
+                    sentence = clean_for_tts(sentence)
+                    if not sentence:
+                        continue
+                    anim.set_state(Animator.SPEAKING)
+                    if not spoke:
+                        speaking_chime()
+                        spoke = True
+                    if _is_chinese(sentence):
+                        wav = _synth_to_file_chinese(sentence)
+                    else:
+                        wav = _synth_to_file(voice, sentence)
+                    wavs.append(wav)
+                    _play_wav_blocking(wav)
+                buffer = parts[-1]   # remainder — sentence still in progress
+
+        # Speak any leftover text
+        remaining = clean_for_tts(buffer)
+        if remaining:
+            anim.set_state(Animator.SPEAKING)
+            if not spoke:
                 speaking_chime()
-                if _is_chinese(sentence):
-                    wav = _synth_to_file_chinese(sentence)
-                else:
-                    wav = _synth_to_file(voice, sentence)
-                wavs.append(wav)
-                _play_wav_blocking(wav)
-            buffer = parts[-1]   # remainder — sentence still in progress
+            if _is_chinese(remaining):
+                wav = _synth_to_file_chinese(remaining)
+            else:
+                wav = _synth_to_file(voice, remaining)
+            wavs.append(wav)
+            _play_wav_blocking(wav)
 
-    # Speak any leftover text
-    remaining = clean_for_tts(buffer)
-    if remaining:
-        anim.set_state(Animator.SPEAKING)
-        speaking_chime()
-        if _is_chinese(remaining):
-            wav = _synth_to_file_chinese(remaining)
-        else:
-            wav = _synth_to_file(voice, remaining)
-        wavs.append(wav)
-        _play_wav_blocking(wav)
-
-    for w in wavs:
-        Path(w).unlink(missing_ok=True)
-
-    full_text = full_text.strip()
-    history.append({"role": "assistant", "content": full_text})
-    return full_text
+        full_text = full_text.strip()
+        history.append({"role": "assistant", "content": full_text})
+        return full_text
+    finally:
+        for w in wavs:
+            Path(w).unlink(missing_ok=True)
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -620,9 +635,9 @@ def main():
 
             except KeyboardInterrupt:
                 print("\n  Stopping...")
-
-            anim.stop()
-            mini.goto_sleep()
+            finally:
+                anim.stop()
+                mini.goto_sleep()
 
     finally:
         daemon_proc.terminate()

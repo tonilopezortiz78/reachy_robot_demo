@@ -21,10 +21,13 @@ echo "║                                                      ║"
 echo "║  5) Talk about NS     demo_talk_ns.py                ║"
 echo "║     Reachy NS ambassador — crypto, AI, Virtuals      ║"
 echo "║                                                      ║"
+echo "║  6) Free Chat         demo_chat.py                  ║"
+echo "║     Open conversation — ask Reachy anything         ║"
+echo "║                                                      ║"
 echo "║  q) Quit                                             ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
-read -p "Pick a demo [1-5/q]: " choice
+read -p "Pick a demo [1-6/q]: " choice
 
 case $choice in
   1) ./run.sh demos/demo_welcome.py ;;
@@ -32,6 +35,7 @@ case $choice in
   3) ./run.sh demos/demo_face.py ;;
   4) ./run.sh demos/demo_lost_friend.py ;;
   5) ./run.sh demos/demo_talk_ns.py ;;
+  6) ./run.sh demos/demo_chat.py ;;
   q|Q) echo "bye"; exit 0 ;;
   *) echo "Unknown choice."; exit 1 ;;
 esac
