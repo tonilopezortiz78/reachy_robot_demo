@@ -22,8 +22,10 @@ from reachy_mini.utils import create_head_pose
 from reachy_demo.daemon import start_daemon, stop_daemon
 from reachy_demo.tts_edge import synth_to_file
 
-ROOT    = Path(__file__).parent.parent
-SPEAKER = "plughw:CARD=Audio,DEV=0"
+ROOT             = Path(__file__).parent.parent
+SPEAKER          = "plughw:CARD=Audio,DEV=0"
+CACHE_GREET      = str(ROOT / "cache" / "dance_greeting.wav")
+CACHE_TEASE      = str(ROOT / "cache" / "dance_teaser.wav")
 
 # ── Music ─────────────────────────────────────────────────────────────────
 # Swap this one line to use any MP3 from the music/ folder.
@@ -81,6 +83,16 @@ def excited_chirp():
 def _wav_dur(path: str) -> float:
     with wave.open(path) as wf:
         return wf.getnframes() / wf.getframerate()
+
+
+def _get_or_synth(text: str, cache_path: str) -> tuple[float, str]:
+    """Return (duration, path). Generates via edge-tts once, then reuses cache."""
+    if Path(cache_path).exists():
+        return _wav_dur(cache_path), cache_path
+    Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+    tmp = synth_to_file(text)
+    Path(tmp).rename(cache_path)
+    return _wav_dur(cache_path), cache_path
 
 # ---------------------------------------------------------------------------
 # Greeting animation (layered sine waves — looks organic)
@@ -226,11 +238,9 @@ def spin(mini, angle, duration=0.45):
 def main():
     print("Network School — Macarena Show")
 
-    print("  Generating speech...")
-    WAV_GREET = synth_to_file(GREETING)
-    WAV_TEASE = synth_to_file(TEASER)
-    greet_dur = _wav_dur(WAV_GREET)
-    tease_dur = _wav_dur(WAV_TEASE)
+    print("  Loading speech...")
+    greet_dur, WAV_GREET = _get_or_synth(GREETING, CACHE_GREET)
+    tease_dur, WAV_TEASE = _get_or_synth(TEASER,   CACHE_TEASE)
     print(f"  Greeting: {greet_dur:.1f}s   Teaser: {tease_dur:.1f}s")
 
     print("\n  >>> RECORD CUE — hit record! <<<")
@@ -297,8 +307,6 @@ def main():
             print("  Show complete!")
 
     finally:
-        Path(WAV_GREET).unlink(missing_ok=True)
-        Path(WAV_TEASE).unlink(missing_ok=True)
         stop_daemon(daemon_proc)
 
 
