@@ -45,7 +45,7 @@ def _is_chinese(text: str) -> bool:
 
 async def _edge_synth_coro(text: str, mp3_path: str, voice: str, rate: str, pitch: str):
     tts = _edge_tts_mod.Communicate(text, voice=voice, rate=rate, pitch=pitch)
-    await asyncio.wait_for(tts.save(mp3_path), timeout=10.0)
+    await asyncio.wait_for(tts.save(mp3_path), timeout=30.0)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ def synth_to_file(text: str) -> str:
         future = asyncio.run_coroutine_threadsafe(
             _edge_synth_coro(text, mp3, voice, rate, pitch), _tts_loop
         )
-        future.result(timeout=12.0)
+        future.result(timeout=33.0)
         subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
              "-i", mp3,
