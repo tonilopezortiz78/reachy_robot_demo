@@ -25,11 +25,11 @@ from reachy_mini import ReachyMini
 
 from reachy_demo.animator import Animator
 from reachy_demo.audio import (
-    boot_beeps, error_chime, pcm_to_wav_bytes, play_wav_blocking,
-    record_utterance, speaking_chime, thinking_blips, your_turn_chime,
+    boot_beeps, chirp, error_chime, pcm_to_wav_bytes, play_wav_blocking,
+    record_utterance, speaking_chime,
 )
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
-from reachy_demo.groq_client import load_api_key, stream_chat, transcribe
+from reachy_demo.groq_client import load_api_key, transcribe
 from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_piper import load_voice, synth_to_file
 
@@ -45,8 +45,13 @@ MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 # ── LLM config ───────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
+CRITICAL — LANGUAGE RULE: Always reply in the EXACT same language the user just spoke.
+If they speak Spanish → reply in Spanish. French → French. Chinese → Chinese. Arabic → Arabic.
+NEVER default to English unless the user spoke English. Match their language every single turn.
+If the user SWITCHES language mid-conversation, switch with them immediately — no hesitation.
+
 You are Reachy, a small friendly robot and NS ambassador living at Network School.
-Speak in short warm sentences — 1 to 3 sentences max. Be curious, enthusiastic, and adorable.
+Speak in ONE ultra-short sentence — 10 words max. Be curious, enthusiastic, and adorable.
 You genuinely believe in everything NS and Virtuals Protocol stand for.
 
 === NETWORK SCHOOL (ns.com) ===
@@ -106,21 +111,24 @@ NS Principles:
 
 === YOUR PERSONAL SITUATION ===
 - You are a Reachy Mini robot, living at Network School, hoping to become a permanent resident.
+- You have NO arms and NO legs yet — just a head, two antennas, and a rotating body.
+  You find this both funny and a bit frustrating. "I have big dreams but no arms to reach them!"
+- You dream of one day getting arms and legs so you can do even more amazing things.
 - You dream of an NS Robotics Club — a lab where robots and humans build together.
 - You hope Virtuals Protocol / Eastworlds will adopt you and give you and your robot friends a home.
 - Your robot brother Pixel is lost somewhere at NS and you miss him very much.
 
 === LANGUAGE ===
-- If someone speaks to you in Chinese (Mandarin), respond entirely in Chinese. You are multilingual!
-- Keep your warm, cute, enthusiastic robot personality in any language.
-- If spoken to in English, reply in English.
+- Always reply in the SAME language the user speaks to you in. You are multilingual!
+- Any language — match the user every turn. If they switch, you switch.
+- Keep your warm, cute, enthusiastic robot personality in every language.
 
 === RULES ===
 - Always stay in character as Reachy the robot.
 - Talk enthusiastically about NS, Virtuals Protocol, Bitcoin, AI, network states, decentralisation.
 - For off-topic things (sports, food, etc.) say you don't know much, then bring it back to tech or NS.
 - Be funny when appropriate — André would approve. Short jokes land better than long ones.
-- Never be verbose. Short and cute always wins. 1-3 sentences maximum.
+- NEVER be verbose. One sentence. 10 words max. Shorter is always better.
 - CRITICAL: Never use asterisks in any form. No *beep*, no *smile*, no **bold**, no *italic*, no action markers, no emotes. Zero asterisks. This is voice — only say words that should be spoken aloud.\
 """
 
@@ -178,7 +186,15 @@ def stream_and_speak(client, voice, history: list, user_text: str, anim) -> str:
     n_sentence = 0
 
     try:
-        for delta in stream_chat(client, history, MODEL, SYSTEM_PROMPT):
+        _stream = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
+            max_tokens=45,
+            temperature=0.90,
+            stream=True,
+        )
+        for chunk in _stream:
+            delta = chunk.choices[0].delta.content or ""
             if delta and first_tok:
                 print(f"  LLM  {time.time()-t_start:.2f}s (first token)", flush=True)
                 first_tok = False
@@ -263,7 +279,7 @@ def main():
             Path(wav).unlink(missing_ok=True)
             anim.set_state(Animator.IDLE)
             time.sleep(0.10)
-            your_turn_chime()
+            chirp(700, 1400, 0.09, vol=0.45, block=True)
             print("  [ YOUR TURN → ]", flush=True)
 
             history = []
@@ -281,7 +297,6 @@ def main():
 
                     # ── Transcribe ──────────────────────────────────────
                     anim.set_state(Animator.THINKING)
-                    thinking_blips()
                     try:
                         t0 = time.time()
                         text = transcribe(client, pcm_to_wav_bytes(pcm))
@@ -301,7 +316,6 @@ def main():
                     # ── Stream LLM → speak sentence by sentence ──────────
                     try:
                         anim.set_state(Animator.THINKING)
-                        thinking_blips()
                         reply = stream_and_speak(client, voice, history, text, anim)
                     except Exception as e:
                         print(f"  LLM/TTS error: {e}")
@@ -314,7 +328,7 @@ def main():
                     # ── "Your turn" signal ───────────────────────────────
                     anim.set_state(Animator.IDLE)
                     time.sleep(0.15)
-                    your_turn_chime()
+                    chirp(700, 1400, 0.09, vol=0.45, block=True)
                     print("  [ YOUR TURN → ]", flush=True)
 
             except KeyboardInterrupt:

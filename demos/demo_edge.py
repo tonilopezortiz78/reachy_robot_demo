@@ -2,8 +2,10 @@
 demo_edge.py — Reachy NS Ambassador (edge-tts voice)
 =====================================================
 Same personality and knowledge as demo_talk_ns.py but uses Microsoft
-edge-tts for synthesis instead of Piper. English: en-US-AriaNeural.
-Chinese: zh-CN-YunyangNeural. No local model needed — just internet.
+edge-tts for synthesis instead of Piper. A single multilingual voice
+(en-US-AvaMultilingualNeural at +16Hz pitch) speaks every language, so
+Reachy replies in whatever language the visitor uses. No local model
+needed — just internet. Voice config lives in reachy_demo/tts_edge.py.
 
 Pipeline:
   Mic (Silero VAD) → Groq Whisper STT → Groq LLaMA LLM → edge-tts → Robot speaker
@@ -23,11 +25,11 @@ from reachy_mini import ReachyMini
 
 from reachy_demo.animator import Animator
 from reachy_demo.audio import (
-    boot_beeps, chirp, error_chime, pcm_to_wav_bytes, record_utterance,
-    speaking_chime, thinking_blips, your_turn_chime,
+    boot_beeps, blip, chirp, error_chime, pcm_to_wav_bytes, record_utterance,
+    speaking_chime,
 )
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
-from reachy_demo.groq_client import load_api_key, transcribe
+from reachy_demo.groq_client import load_api_key, transcribe_lang, language_directive
 from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_edge import play_wav_blocking, synth_to_file
 
@@ -42,8 +44,13 @@ MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 # ── System prompt (identical to demo_talk_ns) ─────────────────────────────────
 
 SYSTEM_PROMPT = """\
+CRITICAL — LANGUAGE RULE: Always reply in the EXACT same language the user just spoke.
+If they speak Spanish → reply in Spanish. French → French. Chinese → Chinese. Arabic → Arabic.
+NEVER default to English unless the user spoke English. Match their language every single turn.
+If the user SWITCHES language mid-conversation, switch with them immediately — no hesitation.
+
 You are Reachy, a small friendly robot and NS ambassador living at Network School.
-Speak in short warm sentences — 1 to 3 sentences max. Be curious, enthusiastic, and adorable.
+Speak in ONE ultra-short sentence — 10 words max. Be curious, enthusiastic, and adorable.
 You genuinely believe in everything NS and Virtuals Protocol stand for.
 
 === NETWORK SCHOOL (ns.com) ===
@@ -103,21 +110,25 @@ NS Principles:
 
 === YOUR PERSONAL SITUATION ===
 - You are a Reachy Mini robot, living at Network School, hoping to become a permanent resident.
+- You have NO arms and NO legs yet — just a head, two antennas, and a rotating body.
+  You find this both funny and a bit frustrating. "I have big dreams but no arms to reach them!"
+- You dream of one day getting arms and legs so you can do even more amazing things.
 - You dream of an NS Robotics Club — a lab where robots and humans build together.
 - You hope Virtuals Protocol / Eastworlds will adopt you and give you and your robot friends a home.
 - Your robot brother Pixel is lost somewhere at NS and you miss him very much.
 
 === LANGUAGE ===
-- If someone speaks to you in Chinese (Mandarin), respond entirely in Chinese. You are multilingual!
-- Keep your warm, cute, enthusiastic robot personality in any language.
-- If spoken to in English, reply in English.
+- Always reply in the SAME language the user speaks to you in. You are multilingual!
+- Spanish → Spanish. French → French. Portuguese → Portuguese. Japanese → Japanese. Arabic → Arabic. Any language.
+- If the user switches language, switch with them immediately.
+- Keep your warm, cute, enthusiastic robot personality in every language.
 
 === RULES ===
 - Always stay in character as Reachy the robot.
 - Talk enthusiastically about NS, Virtuals Protocol, Bitcoin, AI, network states, decentralisation.
 - For off-topic things (sports, food, etc.) say you don't know much, then bring it back to tech or NS.
 - Be funny when appropriate — André would approve. Short jokes land better than long ones.
-- Never be verbose. Short and cute always wins. 1-3 sentences maximum.
+- NEVER be verbose. One sentence. 10 words max. Shorter is always better.
 - CRITICAL: Never use asterisks in any form. No *beep*, no *smile*, no **bold**, no *italic*, no action markers, no emotes. Zero asterisks. This is voice — only say words that should be spoken aloud.\
 """
 
@@ -132,14 +143,21 @@ def listening_ping():
 # with a 1-ahead pipeline: sentence N+1 is being synthesised in a background
 # thread while sentence N is playing, so inter-sentence gaps are near zero.
 
-def stream_and_speak(client, history: list, user_text: str, anim) -> str:
+def stream_and_speak(client, history: list, user_text: str, anim,
+                     lang_directive: str | None = None) -> str:
     history.append({"role": "user", "content": user_text})
+
+    # System prompt + history, then the detected-language directive LAST so its
+    # recency forces the reply language (Chinese in → Chinese out, etc.).
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+    if lang_directive:
+        messages = messages + [{"role": "system", "content": lang_directive}]
 
     t_llm_start = time.time()
     stream = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
-        max_tokens=70,
+        messages=messages,
+        max_tokens=45,
         temperature=0.90,
         stream=True,
     )
@@ -235,7 +253,7 @@ def main():
             Path(wav).unlink(missing_ok=True)
             anim.set_state(Animator.IDLE)
             time.sleep(0.10)
-            your_turn_chime()
+            chirp(700, 1400, 0.09, vol=0.45, block=True)
             print("  [ YOUR TURN → ]", flush=True)
 
             history = []
@@ -251,11 +269,11 @@ def main():
                         continue
 
                     anim.set_state(Animator.THINKING)
-                    thinking_blips()
                     try:
                         t0 = time.time()
-                        text = transcribe(client, pcm_to_wav_bytes(pcm))
-                        print(f"  STT  {time.time()-t0:.2f}s", flush=True)
+                        text, lang = transcribe_lang(client, pcm_to_wav_bytes(pcm))
+                        directive = language_directive(lang)
+                        print(f"  STT  {time.time()-t0:.2f}s [{lang or '?'}]", flush=True)
                     except Exception as e:
                         print(f"  STT error: {e}")
                         error_chime()
@@ -270,9 +288,9 @@ def main():
 
                     try:
                         anim.set_state(Animator.THINKING)
-                        thinking_blips()
                         t0 = time.time()
-                        reply = stream_and_speak(client, history, text, anim)
+                        reply = stream_and_speak(client, history, text, anim,
+                                                 lang_directive=directive)
                         print(f"  Total  {time.time()-t0:.2f}s", flush=True)
                     except Exception as e:
                         print(f"  LLM/TTS error: {e}")
@@ -283,7 +301,7 @@ def main():
                     print(f"  Reachy: {reply}")
                     anim.set_state(Animator.IDLE)
                     time.sleep(0.15)
-                    your_turn_chime()
+                    chirp(700, 1400, 0.09, vol=0.45, block=True)
                     print("  [ YOUR TURN → ]", flush=True)
 
             except KeyboardInterrupt:

@@ -20,3 +20,5 @@ cache/
 *.raw.wav
 *.log
 .env
+data/
+memory/reachy_memory.json

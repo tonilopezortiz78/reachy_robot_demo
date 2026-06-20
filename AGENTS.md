@@ -14,7 +14,7 @@ the hardware/SDK story in full; this file adds what it misses.
 
 ```bash
 ./run.sh demos/<file>.py     # run a specific demo
-./menu.sh                    # interactive picker (5 demos)
+./menu.sh                    # interactive picker (8 demos)
 ```
 
 Always use `run.sh` — it prepends `.venv/bin` to `PATH`, which is required for
@@ -31,8 +31,10 @@ means you bypassed `run.sh`.
 | 2 | `demo_dance.py` | Full show with music. Swap `MUSIC = str(ROOT / "music" / "your.mp3")` |
 | 3 | `demo_talk_ns.py` | NS ambassador, offline Piper voice (needs `GROQ_API_KEY` in `.env`) |
 | 4 | `demo_face_recognition.py` | Greets known faces from `faces/<name>/*.jpg` |
-| 5 | `demo_edge.py` | NS ambassador, online edge-tts (cute AnaNeural voice) |
+| 5 | `demo_edge.py` | NS ambassador, online edge-tts (`AvaMultilingual` voice, pitch `+16Hz` for a cute tone), any language |
 | 6 | `demo_dialog.py` | Fluid conversation — barge-in, 700 ms turn-take, high-threshold VAD during TTS |
+| 7 | `demo_tools7.py` | Parallel AI gesture picker + barge-in, any language (`AvaMultilingual` voice) |
+| 8 | `demo_deepseek.py` | Like #7 but uses `opencode run` as LLM harness (DeepSeek V4 Flash via opencode). STT still via Groq. ~8s LLM latency (opencode overhead) — thinking ticks cover the gap. |
 
 > Several docs (`CLAUDE.md`, `docs/README.md`, `docs/RUN_DEMOS.md`) still
 > reference `demos/demo1_moves.py` — that file no longer exists. Don't trust
@@ -48,7 +50,7 @@ Import these — do not reimplement in a demo:
 | `animator.py` | `Animator(mini)` background thread; `set_state(Animator.IDLE/LISTENING/THINKING/SPEAKING)` |
 | `audio.py` | `SPEAKER`, `MIC` constants; `blip`, `chirp`, `boot_beeps`, `listening_ping`, `your_turn_chime`, `thinking_blips`, `speaking_chime`, `error_chime`, `play_wav_blocking`, `record_utterance` (VAD via Silero), `pcm_to_wav_bytes` |
 | `tts_piper.py` | `load_voice`, `synth_to_file`, `synth_and_play` (offline) |
-| `tts_edge.py` | `synth_to_file`, `play_wav_blocking`; voice constants `ENGLISH_VOICE` / `CHINESE_VOICE` (online, needs internet) |
+| `tts_edge.py` | `synth_to_file`, `play_wav_blocking`; single `VOICE` constant (`en-US-AvaMultilingualNeural`, any language) plus `RATE`/`PITCH`/`VOL` tuning — `+16Hz` pitch gives the cute tone (online, needs internet) |
 | `text.py` | `SENTENCE_END` regex, `clean_for_tts` (strip markdown / roleplay emotes) |
 | `groq_client.py` | `load_api_key` (reads `.env` or env var), `transcribe`, `stream_chat` |
 

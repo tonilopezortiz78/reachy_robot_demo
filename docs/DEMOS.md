@@ -10,12 +10,12 @@ All demos run via `./run.sh demos/<file>.py` or through `./menu.sh`.
 |---|---|---|---|---|
 | 1 | Welcome | `demo_welcome.py` | — | No |
 | 2 | Dance Show | `demo_dance.py` | — | No |
-| 3 | Face Tracking | `demo_face.py` | — | No |
-| 4 | Lost Brother | `demo_lost_friend.py` | — | No |
-| 5 | NS Ambassador (Piper) | `demo_talk_ns.py` | Groq API | Yes |
-| 6 | Free Chat | `demo_chat.py` | Groq API | Yes |
-| 7 | Face Recognition | `demo_face_recognition.py` | — | No |
-| 8 | NS Ambassador (edge-tts) | `demo_edge.py` | Groq API, Microsoft edge-tts | Yes |
+| 3 | NS Ambassador (Piper) | `demo_talk_ns.py` | Groq API | Yes |
+| 4 | Face Recognition | `demo_face_recognition.py` | — | No |
+| 5 | NS Ambassador (edge-tts) | `demo_edge.py` | Groq API, edge-tts | Yes |
+| 6 | Fluid Dialog | `demo_dialog.py` | Groq API, edge-tts | Yes |
+| 7 | LLM Tools | `demo_tools7.py` | Groq API, edge-tts | Yes |
+| 8 | DeepSeek Flash | `demo_deepseek.py` | Groq API, edge-tts, opencode | Yes |
 
 ---
 
@@ -53,38 +53,11 @@ All demos run via `./run.sh demos/<file>.py` or through `./menu.sh`.
 
 ---
 
-## Demo 3 — Face Tracking (`demo_face.py`)
+## Demo 3 — NS Ambassador, Piper voice (`demo_talk_ns.py`)
 
-**What it does:** Camera opens immediately. Once robot is ready, the head, body, and antennas track any detected face in real time. Live preview window with overlay.
+**What it does:** Full conversational demo. Reachy listens, understands, and replies about Network School, Virtuals Protocol, Quantus Protocol, Bitcoin, and AI. Replies in the user's language and can switch mid-conversation. Robot animates throughout.
 
-**Tools / stack:**
-- OpenCV (`cv2`) — camera capture + Haar cascade face detection
-- Reachy Mini SDK — `set_target()` at 20 Hz
-
-**No internet required.**
-
-**Camera:** `/dev/video2` (UVC, 640×360).
-
----
-
-## Demo 4 — Lost Brother (`demo_lost_friend.py`)
-
-**What it does:** Scripted emotional monologue — Reachy tells the story of its lost robot brother Pixel and pitches the idea of an NS Robotics Club.
-
-**Runtime:** ~3 minutes
-
-**Tools / stack:**
-- Piper TTS + ffmpeg — speech with robot FX
-- `RecordedMoves` — emotion presets (`sad1`, `worried`, `loving1`, etc.)
-- Reachy Mini SDK — motion + presets
-
-**No internet required.**
-
----
-
-## Demo 5 — NS Ambassador, Piper voice (`demo_talk_ns.py`)
-
-**What it does:** Full conversational demo. Reachy listens, understands, and replies about Network School, Virtuals Protocol, Quantus Protocol, Bitcoin, and AI. Supports English and Mandarin Chinese. Robot animates throughout.
+**Character:** Reachy has no arms and no legs yet — just a head, antennas, and a rotating body — and acknowledges this with humor. Replies are kept to 1 sentence / 10 words max.
 
 **Pipeline:**
 ```
@@ -93,14 +66,13 @@ Mic → Silero VAD → Groq Whisper STT → Groq LLaMA → Piper TTS → Robot s
 
 **Tools / stack:**
 - Silero VAD — voice activity detection, runs locally on CPU
-- Groq API (`whisper-large-v3-turbo`) — speech-to-text
+- Groq API (`whisper-large-v3`) — speech-to-text (full model for best multilingual accuracy)
 - Groq API (`meta-llama/llama-4-scout-17b-16e-instruct`) — language model
-- Piper TTS (`en_US-amy-medium`) — English synthesis, local, fast (~50ms)
-- edge-tts (`zh-CN-YunyangNeural`) — Mandarin synthesis, Microsoft cloud
+- Piper TTS (`en_US-amy-medium`) — local, fast (~50ms) offline synthesis
 - ffmpeg — audio FX + processing
 - aplay — robot speaker
 
-**Requires internet** (Groq API + edge-tts for Chinese).
+**Requires internet** (Groq API).
 
 **Knowledge base:** `docs/NS_KNOWLEDGE.md`
 
@@ -108,24 +80,7 @@ Mic → Silero VAD → Groq Whisper STT → Groq LLaMA → Piper TTS → Robot s
 
 ---
 
-## Demo 6 — Free Chat (`demo_chat.py`)
-
-**What it does:** Open conversational loop. Same voice pipeline as Demo 5 but with a simpler, general-purpose persona. English only (Whisper forced to `language="en"`).
-
-**Pipeline:**
-```
-Mic → Silero VAD → Groq Whisper STT → Groq LLaMA → Piper TTS → Robot speaker
-```
-
-**Tools / stack:**
-- Same as Demo 5, minus Chinese TTS and NS knowledge base
-- Model: `llama-3.3-70b-versatile`
-
-**Requires internet** (Groq API).
-
----
-
-## Demo 7 — Face Recognition (`demo_face_recognition.py`)
+## Demo 4 — Face Recognition (`demo_face_recognition.py`)
 
 **What it does:** Loads a roster of known faces from `faces/<name>/*.jpg`. When a known person enters frame, Reachy greets them by name. Unknown visitors get a generic welcome. Head tracks the face in real time. 90-second cooldown between greetings.
 
@@ -149,9 +104,11 @@ cp your_photo.jpg faces/tony/
 
 ---
 
-## Demo 8 — NS Ambassador, edge-tts voice (`demo_edge.py`)
+## Demo 5 — NS Ambassador, edge-tts voice (`demo_edge.py`)
 
-**What it does:** Identical personality and knowledge base to Demo 5, but uses Microsoft `en-US-AriaNeural` for English (natural, warm, expressive) instead of Piper. Chinese still uses `zh-CN-YunyangNeural`. Pipelined synthesis hides latency — sentence N+1 is synthesized in the background while sentence N is playing.
+**What it does:** Same personality and knowledge base as Demo 3, but uses a single Microsoft multilingual voice — `en-US-AvaMultilingualNeural` — for all languages instead of Piper. Pipelined synthesis hides latency — sentence N+1 is synthesized in the background while sentence N is playing.
+
+**Voice:** `en-US-AvaMultilingualNeural` at RATE `+30%`, PITCH `+52Hz`, VOL `2.5`. AvaMultilingual is an adult voice at 0Hz; the `+52Hz` pitch lift is what makes it sound cute and young like a small robot. The same voice handles every language.
 
 **Pipeline:**
 ```
@@ -160,22 +117,86 @@ Mic → Silero VAD → Groq Whisper STT → Groq LLaMA → edge-tts → Robot sp
 
 **Tools / stack:**
 - Silero VAD — voice activity detection (local)
-- Groq API (`whisper-large-v3-turbo`) — speech-to-text
+- Groq API (`whisper-large-v3`) — speech-to-text (full model for best multilingual accuracy)
 - Groq API (`meta-llama/llama-4-scout-17b-16e-instruct`) — language model
-- edge-tts (`en-US-AriaNeural`) — English synthesis, Microsoft cloud
-- edge-tts (`zh-CN-YunyangNeural`) — Mandarin synthesis, Microsoft cloud
+- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+52Hz`) — synthesis for any language, Microsoft cloud
 - ffmpeg — resample + volume
 - aplay — robot speaker
 
 **Requires internet** (Groq API + edge-tts).
 
-**vs Demo 5:** Better sounding voice. Requires network for English too (Demo 5 English is offline). Slightly higher latency to first word (~400ms more) but no gaps between sentences.
+**vs Demo 3:** Better sounding voice that works in any language. Requires network for synthesis (Demo 3's Piper voice is offline). Slightly higher latency to first word (~400ms more) but no gaps between sentences.
+
+---
+
+## Demo 6 — Fluid Dialog (`demo_dialog.py`)
+
+**What it does:** Fast conversational demo with barge-in support (interrupt Reachy mid-sentence). ~700ms turn-taking with high-threshold VAD during TTS to avoid echo. Works in any language and switches mid-conversation.
+
+**Pipeline:**
+```
+Mic → Silero VAD → Groq Whisper STT → Groq LLaMA → edge-tts → Robot speaker
+```
+
+**Tools / stack:**
+- Silero VAD — voice activity detection with barge-in (local)
+- Groq API (`whisper-large-v3`) — speech-to-text (full model for best multilingual accuracy)
+- Groq API (`meta-llama/llama-4-scout-17b-16e-instruct`) — language model
+- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+52Hz`) — synthesis for any language, Microsoft cloud
+- ffmpeg — resample + volume
+- aplay — robot speaker
+
+**Requires internet** (Groq API + edge-tts).
+
+---
+
+## Demo 7 — LLM Tools (`demo_tools7.py`)
+
+**What it does:** The most advanced Groq-based talking demo. Same NS ambassador personality as Demos 3/5, but adds barge-in and a parallel AI gesture picker — while the LLM streams its reply, a second call selects a fitting gesture so motion and speech stay in sync. Works in any language. Includes session logging, long-term memory, hallucination rejection, and spoken cues in the user's language.
+
+**Pipeline:**
+```
+Mic → Silero VAD → Groq Whisper STT → Groq LLaMA ┬→ edge-tts → Robot speaker
+                                                  └→ Groq LLaMA (gesture pick) → motion
+```
+
+**Tools / stack:**
+- Silero VAD — voice activity detection with barge-in (local)
+- Groq API (`whisper-large-v3`) — speech-to-text (full model for best multilingual accuracy)
+- Groq API (`meta-llama/llama-4-scout-17b-16e-instruct`) — language model + parallel gesture picker
+- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+52Hz`) — synthesis for any language, Microsoft cloud
+- ffmpeg — resample + volume
+- aplay — robot speaker
+
+**Requires internet** (Groq API + edge-tts).
+
+---
+
+## Demo 8 — DeepSeek Flash (`demo_deepseek.py`)
+
+**What it does:** Same as Demo 7 (barge-in, parallel gesture picker, session logging, memory, multilingual) but uses `opencode run` as the LLM harness instead of calling Groq's LLM API directly. opencode's default model (DeepSeek V4 Flash) powers all text generation. ~8s LLM latency (opencode overhead) — thinking ticks and spoken cues cover the gap. STT still via Groq Whisper.
+
+**Pipeline:**
+```
+Mic → Silero VAD → Groq Whisper STT → opencode run (DeepSeek V4 Flash) ┬→ edge-tts → Robot speaker
+                                                                       └→ opencode (gesture pick) → motion
+```
+
+**Tools / stack:**
+- Silero VAD — voice activity detection with barge-in (local)
+- Groq API (`whisper-large-v3`) — speech-to-text (full model for best multilingual accuracy)
+- opencode CLI (`opencode run`, default model DeepSeek V4 Flash) — language model + gesture picker
+- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+52Hz`) — synthesis for any language, Microsoft cloud
+- ffmpeg — resample + volume
+- aplay — robot speaker
+
+**Requires internet** (Groq API + edge-tts). opencode's default model must be DeepSeek V4 Flash.
 
 ---
 
 ## Environment setup
 
-**API key** (required for demos 5, 6, 8):
+**API key** (required for demos 3, 5, 6, 7, 8):
 ```bash
 echo "GROQ_API_KEY=your_key_here" > .env
 ```

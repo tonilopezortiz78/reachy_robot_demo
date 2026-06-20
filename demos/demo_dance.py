@@ -1,11 +1,14 @@
 """
 demo_dance.py — Network School Full Show (Macarena Edition)
 ===========================================================
-Record cue → boot → IMMEDIATE wake-up → greeting speech →
-beat-synced Macarena choreography + music → climax → bow → sleep.
+Record cue → boot → greeting speech → beat-synced Macarena → climax → bow → sleep.
 
 Beat-sync: pre-analyzed at 103.4 BPM (0.5805 s/beat).
-Body sweeps up to ±1.4 rad (80°). Jump move: slow push-down → fast snap-up.
+Uses wall-clock drift correction — each pose snaps to the true beat boundary
+so movements stay locked to the music even after SDK overhead accumulates.
+
+Escalation: 3 cycles at scale 1.0 → 1.3 → 1.6 (amplitude grows each round).
+Music volume: 2.0 (+6 dB vs default).
 
 Run:  ./run.sh demos/demo_dance.py
 """
@@ -20,18 +23,18 @@ from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
 
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
-from reachy_demo.tts_edge import synth_to_file
+from reachy_demo.tts_edge import synth_to_file  # PITCH +8Hz set in tts_edge.py
 
-ROOT             = Path(__file__).parent.parent
-SPEAKER          = "plughw:CARD=Audio,DEV=0"
-CACHE_GREET      = str(ROOT / "cache" / "dance_greeting.wav")
-CACHE_TEASE      = str(ROOT / "cache" / "dance_teaser.wav")
+ROOT        = Path(__file__).parent.parent
+SPEAKER     = "plughw:CARD=Audio,DEV=0"
+CACHE_GREET = str(ROOT / "cache" / "dance_greeting.wav")
+CACHE_TEASE = str(ROOT / "cache" / "dance_teaser.wav")
 
-# ── Music ─────────────────────────────────────────────────────────────────
+# ── Music ─────────────────────────────────────────────────────────────────────
 # Swap this one line to use any MP3 from the music/ folder.
 MUSIC = str(ROOT / "music" / "macarena.mp3")
 # MUSIC = str(ROOT / "music" / "blipotron.mp3")
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 GREETING = (
     "Welcome to Network School! "
@@ -83,7 +86,6 @@ def excited_chirp():
 def _wav_dur(path: str) -> float:
     with wave.open(path) as wf:
         return wf.getnframes() / wf.getframerate()
-
 
 def _get_or_synth(text: str, cache_path: str) -> tuple[float, str]:
     """Return (duration, path). Generates via edge-tts once, then reuses cache."""
@@ -149,75 +151,107 @@ def speak_and_animate(mini, audio_path, audio_duration):
     proc.wait()
 
 # ---------------------------------------------------------------------------
-# Music
+# Music — volume 2.0 (+6 dB louder than before)
 # ---------------------------------------------------------------------------
 
-def play_music(path: str) -> subprocess.Popen:
-    return subprocess.Popen(
+def play_music(path: str) -> tuple[subprocess.Popen, float]:
+    """Start music playback. Returns (process, wall-clock start time) for sync."""
+    proc = subprocess.Popen(
         ["ffmpeg", "-hide_banner", "-loglevel", "error",
          "-stream_loop", "-1", "-i", path,
-         "-af", "volume=0.85", "-f", "alsa", SPEAKER],
+         "-af", "volume=2.0", "-f", "alsa", SPEAKER],
     )
+    return proc, time.time()
 
 # ---------------------------------------------------------------------------
 # Beat-synced dance moves
 # ---------------------------------------------------------------------------
 
-# 8-pose Macarena cycle — each pose held for one beat (0.58 s).
-# Mimics the iconic arm sequence: right out → left out → right shoulder →
-# left shoulder → cross → cross → hands-to-head → hip shake.
-# Scale factor increases each cycle so moves get bigger.
+# 8-pose Macarena cycle — one pose per beat (0.58 s).
+# Mimics the iconic arm sequence: right out → right up → left out → left up →
+# right cross → left cross → both-up shimmy-R → both-up shimmy-L.
+# Antennas mirror the "arm" direction on each beat for maximum expressiveness.
+# Scale factor grows each cycle so moves become bigger and bigger.
 MACARENA_POSES = [
     # pitch   yaw     roll    body_yaw  [ant_L, ant_R]
-    ( 0.08, -0.38,  0.08,   0.50, [ 0.15, -0.55]),  # 0 right arm out
-    ( 0.13, -0.48,  0.12,   0.75, [ 0.08, -0.72]),  # 1 right arm up
-    ( 0.08,  0.38, -0.08,  -0.50, [ 0.55, -0.15]),  # 2 left arm out
-    ( 0.13,  0.48, -0.12,  -0.75, [ 0.72, -0.08]),  # 3 left arm up
-    ( 0.04, -0.18,  0.28,   0.95, [ 0.55, -0.55]),  # 4 right shoulder cross
-    ( 0.04,  0.18, -0.28,  -0.95, [-0.55,  0.55]),  # 5 left shoulder cross
-    (-0.20,  0.00,  0.12,   1.25, [ 0.75,  0.75]),  # 6 hands to head
-    (-0.12,  0.04, -0.12,  -1.40, [ 0.65,  0.65]),  # 7 hip shake left
+    ( 0.08, -0.42,  0.10,   0.55, [ 0.10, -0.72]),  # 0 right arm out
+    ( 0.15, -0.52,  0.14,   0.80, [ 0.05, -0.85]),  # 1 right arm high
+    ( 0.08,  0.42, -0.10,  -0.55, [ 0.72, -0.10]),  # 2 left arm out
+    ( 0.15,  0.52, -0.14,  -0.80, [ 0.85, -0.05]),  # 3 left arm high
+    ( 0.04, -0.20,  0.30,   1.00, [ 0.60, -0.60]),  # 4 right shoulder cross
+    ( 0.04,  0.20, -0.30,  -1.00, [-0.60,  0.60]),  # 5 left shoulder cross
+    (-0.22,  0.05,  0.14,   1.30, [ 0.80,  0.80]),  # 6 shimmy right (antennas up!)
+    (-0.14,  0.05, -0.14,  -1.40, [ 0.80,  0.80]),  # 7 shimmy left  (antennas up!)
 ]
 
-def macarena_beat(mini, pose, scale=1.0):
+
+def _clamp(v, lim):
+    return max(-lim, min(lim, v))
+
+
+def macarena_beat(mini, pose, scale: float, target_t: float):
+    """
+    Move to pose finishing just before target_t, then sleep to exact beat boundary.
+    Wall-clock drift correction: duration is calculated from remaining time,
+    so any SDK overhead in previous beats is automatically absorbed.
+    """
     p, y, r, by, ants = pose
-    clamp = lambda v, lim: max(-lim, min(lim, v))
+    now = time.time()
+    move_dur = max(0.12, target_t - now - 0.04)  # 40 ms settling gap
+
     mini.goto_target(
         head=create_head_pose(
-            pitch=clamp(p * scale, 0.38),
-            yaw=clamp(y * scale, 1.57),
-            roll=clamp(r * scale, 0.38),
+            pitch=_clamp(p * scale, 0.36),
+            yaw=_clamp(y * scale, 1.50),
+            roll=_clamp(r * scale, 0.36),
             degrees=False,
         ),
-        antennas=[ants[0], ants[1]],
-        body_yaw=clamp(by * scale, 1.40),
-        duration=BEAT - 0.06,
+        antennas=[
+            _clamp(ants[0] * scale, 0.80),
+            _clamp(ants[1] * scale, 0.80),
+        ],
+        body_yaw=_clamp(by * scale, 1.40),
+        duration=move_dur,
     )
-    time.sleep(0.06)
+    # Drift correction: sleep exactly until the beat
+    remaining = target_t - time.time()
+    if remaining > 0:
+        time.sleep(remaining)
 
 
 def jump(mini):
     """Slow push-down → instant snap-up (slingshot effect)."""
     print("    ↓ JUMP ↓")
     mini.goto_target(
-        head=create_head_pose(pitch=-0.36, roll=0.08, degrees=False),
-        body_yaw=0.0, duration=0.55,
+        head=create_head_pose(pitch=-0.38, roll=0.10, degrees=False),
+        antennas=[-0.50, -0.50],
+        body_yaw=0.0, duration=0.50,
     )
     time.sleep(0.02)
     mini.goto_target(
-        head=create_head_pose(pitch=0.38, roll=-0.05, degrees=False),
-        antennas=[0.8, 0.8], body_yaw=0.0, duration=0.07,
+        head=create_head_pose(pitch=0.40, roll=-0.06, degrees=False),
+        antennas=[0.90, 0.90],
+        body_yaw=0.0, duration=0.07,
     )
-    time.sleep(0.10)
+    time.sleep(0.12)
 
 
-def macarena_section(mini, cycles=3):
-    """Run the Macarena cycle, escalating each pass, with a jump at the end of each cycle."""
+def macarena_section(mini, cycles: int = 3, music_t0: float = 0.0, beat_idx: int = 0):
+    """
+    Beat-synced Macarena cycles with per-beat drift correction.
+
+    music_t0:  wall-clock time when music started (from play_music)
+    beat_idx:  which beat index we're starting on (accounts for intro spins)
+
+    Scale escalation: 1.0 → 1.30 → 1.60 — movements grow each round.
+    """
     for c in range(cycles):
-        scale = 1.0 + c * 0.18          # 1.0 → 1.18 → 1.36
-        print(f"  -- Macarena cycle {c+1} (scale {scale:.2f}) --")
+        scale = 1.0 + c * 0.30   # cycle 0: 1.0 | cycle 1: 1.30 | cycle 2: 1.60
+        print(f"  -- Macarena cycle {c+1}/3 (scale ×{scale:.2f}) --")
         for i, pose in enumerate(MACARENA_POSES):
-            macarena_beat(mini, pose, scale)
+            beat_num = beat_idx + c * len(MACARENA_POSES) + i
+            target_t = music_t0 + beat_num * BEAT
+            macarena_beat(mini, pose, scale, target_t)
         if c > 0:
             jump(mini)
 
@@ -231,6 +265,36 @@ def spin(mini, angle, duration=0.45):
     )
     time.sleep(duration + 0.05)
 
+
+def spin360(mini):
+    """
+    360° spin illusion. Body yaw maxes at ±160° (±2.79 rad), so true 360 is
+    impossible in one move. Instead: blast to +160° → instantly snap to -160°
+    (the motor crosses the gap unseen) → return to 0. Looks like a full spin.
+    Antennas fly out for drama.
+    """
+    # Phase 1: fast blast to max right with antennas spread
+    mini.goto_target(
+        head=create_head_pose(pitch=0.10, degrees=False),
+        antennas=[0.80, -0.80],
+        body_yaw=2.79, duration=0.22,
+    )
+    time.sleep(0.02)
+    # Phase 2: instant snap to max left (motor crosses the unseen gap)
+    mini.goto_target(
+        head=create_head_pose(pitch=0.10, degrees=False),
+        antennas=[-0.80, 0.80],
+        body_yaw=-2.79, duration=0.18,
+    )
+    time.sleep(0.02)
+    # Phase 3: return to center with antennas up — triumphant landing
+    mini.goto_target(
+        head=create_head_pose(pitch=0.25, degrees=False),
+        antennas=[0.80, 0.80],
+        body_yaw=0.0, duration=0.28,
+    )
+    time.sleep(0.10)
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -243,7 +307,7 @@ def main():
     tease_dur, WAV_TEASE = _get_or_synth(TEASER,   CACHE_TEASE)
     print(f"  Greeting: {greet_dur:.1f}s   Teaser: {tease_dur:.1f}s")
 
-    daemon_proc = launch_daemon()           # start now — record cue + boot take ~5 s
+    daemon_proc = launch_daemon()
 
     print("\n  >>> RECORD CUE — hit record! <<<")
     record_cue()
@@ -251,7 +315,7 @@ def main():
     print("  Boot sequence...")
     boot_sequence()
 
-    wait_for_daemon(daemon_proc)           # almost certainly already up by now
+    wait_for_daemon(daemon_proc)
 
     try:
         em = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
@@ -272,26 +336,34 @@ def main():
 
             # ── Act 2: Macarena ──────────────────────────────────────────
             print("\n  ── Act 2: Macarena ──")
-            beat = play_music(MUSIC)
+            beat_proc, music_t0 = play_music(MUSIC)
             try:
-                # Dramatic entry spin
+                # Dramatic entry spins
                 spin(mini,  1.4, duration=0.35)
                 spin(mini, -1.4, duration=0.35)
-                spin(mini,  0.0, duration=0.30)
+                spin(mini,  0.0, duration=0.28)
 
-                # 3 escalating Macarena cycles
-                macarena_section(mini, cycles=3)
+                # Snap to next clean beat boundary so cycles start in sync
+                elapsed   = time.time() - music_t0
+                beat_idx  = math.ceil(elapsed / BEAT)
+                wait_snap = music_t0 + beat_idx * BEAT - time.time()
+                if wait_snap > 0:
+                    time.sleep(wait_snap)
+                print(f"  Snapped to beat {beat_idx} ({elapsed:.2f}s into music)")
 
-                # Climax sweep + big preset
+                # 3 escalating Macarena cycles (scale 1.0 → 1.30 → 1.60)
+                macarena_section(mini, cycles=3, music_t0=music_t0, beat_idx=beat_idx)
+
+                # Climax — 360 spin illusion + big presets
                 print("  *** CLIMAX ***")
-                spin(mini,  1.4, duration=0.30)
+                spin360(mini)
                 mini.play_move(em.get("dance3"), play_frequency=80.0, sound=False)
-                spin(mini, -1.4, duration=0.30)
+                spin360(mini)
                 mini.play_move(em.get("success2"), play_frequency=80.0, sound=False)
 
             finally:
-                beat.terminate()
-                beat.wait()
+                beat_proc.terminate()
+                beat_proc.wait()
 
             # ── Bow out ──────────────────────────────────────────────────
             print("\n  ── Bow out ──")

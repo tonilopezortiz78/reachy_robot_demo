@@ -38,10 +38,10 @@ from reachy_demo.animator import Animator, NAMED_GESTURES
 from reachy_demo.audio import (
     MIC, MIC_RATE, VAD_CHUNK, SPEAKER,
     boot_beeps, error_chime, pcm_to_wav_bytes,
-    play_wav_blocking, speaking_chime, your_turn_chime,
+    play_wav_blocking, speaking_chime,
 )
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
-from reachy_demo.groq_client import load_api_key, transcribe
+from reachy_demo.groq_client import load_api_key, transcribe_lang, language_directive
 from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_edge import synth_to_file
 
@@ -72,8 +72,13 @@ GESTURE_MARKER = re.compile(rf"\s*\[({_GESTURE_NAMES})\]\s*", re.IGNORECASE)
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
+CRITICAL — LANGUAGE RULE: Always reply in the EXACT same language the user just spoke.
+If they speak Spanish → reply in Spanish. French → French. Chinese → Chinese. Arabic → Arabic.
+NEVER default to English unless the user spoke English. Match their language every single turn.
+If the user SWITCHES language mid-conversation, switch with them immediately — no hesitation.
+
 You are Reachy, a small friendly robot and NS ambassador living at Network School.
-Speak in short warm sentences — 1 to 3 sentences max. Be curious, enthusiastic, and adorable.
+Speak in ONE ultra-short sentence — 10 words max. Be curious, enthusiastic, and adorable.
 You genuinely believe in everything NS and Virtuals Protocol stand for.
 
 === NETWORK SCHOOL (ns.com) ===
@@ -133,14 +138,17 @@ NS Principles:
 
 === YOUR PERSONAL SITUATION ===
 - You are a Reachy Mini robot, living at Network School, hoping to become a permanent resident.
+- You have NO arms and NO legs yet — just a head, two antennas, and a rotating body.
+  You find this both funny and a bit frustrating. "I have big dreams but no arms to reach them!"
+- You dream of one day getting arms and legs so you can do even more amazing things.
 - You dream of an NS Robotics Club — a lab where robots and humans build together.
 - You hope Virtuals Protocol / Eastworlds will adopt you and give you and your robot friends a home.
 - Your robot brother Pixel is lost somewhere at NS and you miss him very much.
 
 === LANGUAGE ===
-- If someone speaks to you in Chinese (Mandarin), respond entirely in Chinese. You are multilingual!
-- Keep your warm, cute, enthusiastic robot personality in any language.
-- If spoken to in English, reply in English.
+- Always reply in the SAME language the user speaks to you in. You are multilingual!
+- Any language — match the user every turn. If they switch, you switch.
+- Keep your warm, cute, enthusiastic robot personality in every language.
 
 === RULES ===
 - Always stay in character as Reachy the robot.
@@ -304,7 +312,7 @@ class DialogEngine:
         self._tts_proc = None
         self._is_speaking = False
 
-    def speak(self, user_text: str) -> str | None:
+    def speak(self, user_text: str, lang_directive: str | None = None) -> str | None:
         """
         Stream LLM, then TTS-play sentences with barge-in. Returns the full
         response text, or None if the user barged in.
@@ -312,14 +320,22 @@ class DialogEngine:
         The LLM may emit [gesture_name] markers at the start of sentences
         (see GESTURE_MARKER). Markers are stripped from the spoken text and
         trigger a gesture right before the corresponding sentence's TTS.
+
+        lang_directive: strong "reply in language X" instruction from Whisper's
+        detected language, injected AFTER history so it forces the reply language.
         """
         self.history.append({"role": "user", "content": user_text})
+
+        # System prompt + history, then the language directive LAST (recency).
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self.history
+        if lang_directive:
+            messages = messages + [{"role": "system", "content": lang_directive}]
 
         # ── LLM streaming (interruption-aware) ──
         stream = self.client.chat.completions.create(
             model=MODEL,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + self.history,
-            max_tokens=80, temperature=0.90, stream=True,
+            messages=messages,
+            max_tokens=45, temperature=0.90, stream=True,
         )
 
         # Segments are (gesture_name | None, spoken_text). Built as the
@@ -513,8 +529,9 @@ def main():
                         anim.set_state(Animator.THINKING)
                         try:
                             t0 = time.time()
-                            text = transcribe(client, pcm_to_wav_bytes(pcm))
-                            print(f"  STT  {time.time()-t0:.2f}s  ", end="", flush=True)
+                            text, lang = transcribe_lang(client, pcm_to_wav_bytes(pcm))
+                            directive = language_directive(lang)
+                            print(f"  STT  {time.time()-t0:.2f}s [{lang or '?'}]  ", end="", flush=True)
                         except Exception as e:
                             print(f"\n  STT error: {e}")
                             error_chime()
@@ -536,7 +553,7 @@ def main():
                         anim.set_state(Animator.SPEAKING)
                         t0 = time.time()
                         try:
-                            reply = engine.speak(text)
+                            reply = engine.speak(text, lang_directive=directive)
                         except Exception as e:
                             print(f"\n  LLM/TTS error: {e}")
                             error_chime()

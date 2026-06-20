@@ -25,6 +25,12 @@ def clean_for_tts(text: str) -> str:
     text = re.sub(r'`+', '', text)                           # ` ``
     text = re.sub(r'#+\s*', '', text)                        # ## headings
     text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)   # [text](url) → text
+    # Strip any remaining bracketed tags so they are never spoken. The LLM
+    # sometimes invents emotion tags in the reply language — e.g. [高兴], [laughs],
+    # [sourit] — which our English-only gesture regex won't catch. Remove all of
+    # them here (half-width [] and CJK full-width 【】) before TTS.
+    text = re.sub(r'\[[^\]]*\]', '', text)
+    text = re.sub(r'【[^】]*】', '', text)
     text = re.sub(r'^\s*[-•–]\s*', '', text, flags=re.M)     # bullet points
     text = re.sub(r'\s+', ' ', text).strip()
     return text

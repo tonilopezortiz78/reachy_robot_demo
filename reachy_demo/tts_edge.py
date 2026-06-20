@@ -6,7 +6,7 @@ the process. All edge-tts calls are submitted to it via run_coroutine_threadsafe
 which reuses the underlying TLS connection instead of re-handshaking per sentence.
 
 Provides:
-  - ENGLISH_VOICE, CHINESE_VOICE — voice name constants
+  - VOICE — multilingual voice constant (same voice for all languages)
   - synth_to_file(text) → str  (temp WAV path; caller must delete)
   - play_wav_blocking(path) — re-exported from audio for convenience
 """
@@ -24,17 +24,18 @@ from reachy_demo.audio import play_wav_blocking  # noqa: F401  (re-export)
 
 # ── Voice constants ───────────────────────────────────────────────────────────
 
-ENGLISH_VOICE = "en-US-AnaNeural"   # child voice — naturally high-pitched and cute
-# YunyangNeural is Microsoft's newscast-style Mandarin voice.
-# Newscast voices are trained with explicit tone precision and clear articulation —
-# the best choice for a robot that needs to be understood in a noisy event space.
-CHINESE_VOICE = "zh-CN-YunyangNeural"
+# Single multilingual voice — sounds identical regardless of language spoken.
+# AvaMultilingual: Expressive, Caring, Pleasant, Friendly — ideal robot character.
+VOICE = "en-US-AvaMultilingualNeural"
 
-# TTS tuning — snappier pace + louder output
-# Rate: % offset from natural (positive = faster, negative = slower)
-# Vol:  ffmpeg volume multiplier (1.0 = unity, 2.0 = +6 dB, 2.5 = +8 dB)
-ENGLISH_RATE, ENGLISH_PITCH, ENGLISH_VOL = "+30%", "+8Hz", "2.5"
-CHINESE_RATE, CHINESE_PITCH, CHINESE_VOL = "+5%",  "+8Hz", "2.5"
+# TTS tuning — snappier pace + louder output + cute child pitch
+# Rate:  % offset from natural (positive = faster, negative = slower)
+# Pitch: +52Hz — a very high, childlike robot voice. AvaMultilingual is an adult
+#        voice at 0Hz; this big lift is what makes Reachy sound like a little kid.
+#        This is intentional. If it ever sounds too chipmunky, dial back toward +32Hz.
+#        NEVER set to 0.
+# Vol:   ffmpeg volume multiplier (1.0 = unity, 2.0 = +6 dB, 2.5 = +8 dB)
+RATE, PITCH, VOL = "+30%", "+52Hz", "2.5"
 
 # ── Persistent event loop ─────────────────────────────────────────────────────
 
@@ -43,12 +44,6 @@ _tts_thread = threading.Thread(target=_tts_loop.run_forever, daemon=True)
 _tts_thread.start()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _is_chinese(text: str) -> bool:
-    """True if more than 15% of characters are Chinese."""
-    cjk = sum(1 for c in text if '一' <= c <= '鿿')
-    return cjk > max(2, len(text) * 0.15)
-
 
 async def _edge_synth_coro(text: str, mp3_path: str, voice: str, rate: str, pitch: str):
     tts = _edge_tts_mod.Communicate(text, voice=voice, rate=rate, pitch=pitch)
@@ -60,19 +55,15 @@ def synth_to_file(text: str) -> str:
     """
     Synthesise text via edge-tts, resample to 48kHz WAV, return temp path.
     Caller must delete the returned file.
-    Language is auto-detected: Chinese → CHINESE_VOICE, else ENGLISH_VOICE.
+    Uses a single multilingual voice — language is passed through as-is.
     """
     mp3 = tempfile.mktemp(suffix=".mp3")
     out = tempfile.mktemp(suffix=".wav")
-    if _is_chinese(text):
-        voice, rate, pitch, vol = CHINESE_VOICE, CHINESE_RATE, CHINESE_PITCH, CHINESE_VOL
-    else:
-        voice, rate, pitch, vol = ENGLISH_VOICE, ENGLISH_RATE, ENGLISH_PITCH, ENGLISH_VOL
     snippet = text[:50].replace("\n", " ")
     try:
         t0 = time.time()
         future = asyncio.run_coroutine_threadsafe(
-            _edge_synth_coro(text, mp3, voice, rate, pitch), _tts_loop
+            _edge_synth_coro(text, mp3, VOICE, RATE, PITCH), _tts_loop
         )
         future.result(timeout=33.0)
         t_edge = time.time() - t0
@@ -81,7 +72,7 @@ def synth_to_file(text: str) -> str:
         subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
              "-i", mp3,
-             "-af", f"aresample=resampler=swr:out_sample_rate=48000,volume={vol}",
+             "-af", f"aresample=resampler=swr:out_sample_rate=48000,volume={VOL}",
              out],
             check=True,
         )

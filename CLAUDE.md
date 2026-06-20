@@ -7,8 +7,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Control software for a **Reachy Mini Lite** (USB variant) robot from Pollen Robotics. The robot is a USB peripheral — four logical devices over one cable: motors (`/dev/ttyACM0`), speaker (ALSA card 2, `plughw:CARD=Audio,DEV=0`), camera+mic (ALSA card 1, `plughw:CARD=Camera,DEV=0` for capture; `/dev/video2` for video), and camera-audio combined as ALSA card 1. **The laptop is the computer.** The Raspberry Pi inside the robot is only a USB-to-serial bridge for the Feetech motors.
 
 **Audio devices:**
-- Speaker: `plughw:CARD=Audio,DEV=0` (card 2, Pollen Robotics Reachy Mini Audio) — playback only, no real mic
-- Microphone: `plughw:CARD=Camera,DEV=0` (card 1, SunplusIT camera module) — the camera has a built-in USB mic
+- Speaker: `plughw:CARD=Audio,DEV=0` (card 2, Pollen Robotics Reachy Mini Audio) — playback
+- **Microphone: the Pollen "Reachy Mini Audio" device input** — PipeWire source
+  `alsa_input.usb-Pollen_Robotics_Reachy_Mini_Audio_<serial>-00.analog-stereo`
+  (native 16 kHz, voice-optimised). This is the **only working robot mic** on this unit.
+
+⚠️ **MIC GOTCHA (verified the hard way):** This machine has several microphones and
+picking the wrong one breaks everything. Measured signal levels:
+- Pollen **Audio** device input → **RMS ~880–2700, the real working voice mic. USE THIS.**
+- SunplusIT **Camera** mic (`plughw:CARD=Camera,DEV=0`) → flatlined, RMS ~2 (silent on this unit,
+  despite the camera nominally having a mic).
+- **Laptop** built-in mic (`alsa_input.pci-...analog-stereo`) → captures ROOM NOISE, not the
+  visitor. Using it made Whisper hallucinate ("con Echigua") and mis-detect the language —
+  the root cause of the "spoke Japanese, replied Spanish" failure.
+
+`reachy_demo/audio.py` auto-detects the right one at import via `_detect_robot_mic()`
+(prefers `Reachy_Mini_Audio`, then `Reachy_Mini_Camera`, then laptop). To inspect the
+candidates yourself: `pactl list short sources`. Capture is done with
+`pacat --record --device=<source> --rate=16000 --channels=1 --format=s16le` (NOT `arecord` —
+PipeWire holds the device, so direct ALSA gives "Device or resource busy").
 
 ## Running scripts
 
@@ -119,7 +136,53 @@ subprocess.Popen(["aplay", "-D", "plughw:CARD=Audio,DEV=0", "-q", wav_path])
 
 `plughw:CARD=Audio,DEV=0` goes direct to the robot's USB speaker, bypassing PipeWire/PulseAudio. Never route through PulseAudio sinks for the robot — the routing is fragile and goes to whichever device PipeWire chooses as default.
 
-TTS is done with Piper (`voices/en_US-amy-medium.onnx`):
+## Demo overview
+
+| Menu | File | Voice | Features |
+|------|------|-------|----------|
+| 1 | demo_welcome.py | edge-tts (AvaMultilingual) | Greeting + sine-wave animation |
+| 2 | demo_dance.py | edge-tts (AvaMultilingual) | Macarena show, beat-synced |
+| 3 | demo_talk_ns.py | Piper (offline, en-US-amy) | NS ambassador, works without internet |
+| 4 | demo_face_recognition.py | edge-tts (AvaMultilingual) | Greets visitors by name |
+| 5 | demo_edge.py | edge-tts (AvaMultilingual) | NS ambassador, any language |
+| 6 | demo_dialog.py | edge-tts (AvaMultilingual) | Barge-in, continuous listening, gestures |
+| 7 | demo_tools7.py | edge-tts (AvaMultilingual) | Parallel AI gesture picker, barge-in, any language |
+
+**Character rules shared by all talking demos (5, 6, 7):**
+- 1 sentence, 10 words max — enforced in system prompt AND via `max_tokens=45`
+- CRITICAL LANGUAGE RULE at top of every system prompt — robot matches user's language and switches mid-conversation
+- No arms, no legs yet — Reachy acknowledges this with self-deprecating humour if asked
+
+## Speech models (Groq)
+
+All talking demos use Groq for both STT and the LLM, configured in `reachy_demo/groq_client.py`
+and a `MODEL` constant in each demo:
+
+- **STT**: `whisper-large-v3` (the full model, NOT `-turbo`). Turbo is faster but worse at
+  non-English; the full model is far more accurate for the multilingual visitors Reachy meets.
+  Language is auto-detected (`language=None`) so it transcribes any language spoken.
+- **LLM**: `meta-llama/llama-4-scout-17b-16e-instruct` — natively multilingual and the fastest
+  strong model on Groq. Replies are capped at `max_tokens=45` (one short sentence), so a bigger
+  model would only add latency you'd feel as lag. Keep Scout unless replies need to get smarter
+  at the cost of speed.
+
+## TTS — edge-tts (online demos)
+
+All online demos (5, 6, 7 and demo_dance.py) use edge-tts, configured in `reachy_demo/tts_edge.py`:
+
+```python
+VOICE = "en-US-AvaMultilingualNeural"   # single voice for ALL languages (70+ supported)
+RATE, PITCH, VOL = "+30%", "+16Hz", "2.5"
+```
+
+**PITCH is `+16Hz`** — AvaMultilingual is an adult voice at 0Hz; the pitch lift is what makes
+Reachy sound cute and young. Never set it to `0`. Raise toward `+24Hz` for even cuter; past
+`~+28Hz` it starts sounding chipmunky. (The old setup used `en-US-AnaNeural`, a naturally cute
+English-only child voice — we traded it for AvaMultilingual + pitch to gain 70+ languages.)
+The multilingual voice auto-speaks in whatever language the user uses (Spanish, French,
+Japanese, Arabic, etc.) without switching voice models.
+
+TTS for offline demo (demo_talk_ns.py) uses Piper:
 
 ```python
 from piper import PiperVoice
