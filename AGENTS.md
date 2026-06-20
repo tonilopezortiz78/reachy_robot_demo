@@ -34,7 +34,7 @@ means you bypassed `run.sh`.
 | 5 | `demo_edge.py` | NS ambassador, online edge-tts (`AvaMultilingual` voice, pitch `+16Hz` for a cute tone), any language |
 | 6 | `demo_dialog.py` | Fluid conversation — barge-in, 700 ms turn-take, high-threshold VAD during TTS |
 | 7 | `demo_tools7.py` | Parallel AI gesture picker + barge-in, any language (`AvaMultilingual` voice) |
-| 8 | `demo_deepseek.py` | Like #7 but uses `opencode run` as LLM harness (DeepSeek V4 Flash via opencode). STT still via Groq. ~8s LLM latency (opencode overhead) — thinking ticks cover the gap. |
+| 8 | `demo_deepseek.py` | Like #7 but uses `opencode run` as LLM harness (DeepSeek V4 Flash via opencode). STT still via Groq. ~8s LLM latency (opencode overhead) — thinking ticks cover the gap. Works well but slow — the `opencode run` subprocess overhead + model inference makes each turn ~8s. |
 
 > Several docs (`CLAUDE.md`, `docs/README.md`, `docs/RUN_DEMOS.md`) still
 > reference `demos/demo1_moves.py` — that file no longer exists. Don't trust
