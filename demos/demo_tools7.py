@@ -74,7 +74,7 @@ if not GROQ_KEY:
 #                  memory extraction. Llama 3.1 8B Instant: fastest (~0.29s) and
 #                  cheapest on Groq — perfect for tiny one-shot calls, and it makes
 #                  the gesture fire even sooner, before the first spoken word.
-CHAT_MODEL   = "meta-llama/llama-4-scout-17b-16e-instruct"
+CHAT_MODEL   = "llama-3.3-70b-versatile"
 ACTION_MODEL = "llama-3.1-8b-instant"
 MODEL = CHAT_MODEL   # back-compat alias (logging, etc.)
 
