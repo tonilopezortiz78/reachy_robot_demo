@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -51,7 +52,45 @@ from reachy_demo.tts_edge import synth_to_file
 
 ROOT = Path(__file__).parent.parent
 OPCODE = "opencode"
-# opencode's default model is DeepSeek V4 Flash — no -m needed
+OPENCODE_LOG = "/tmp/reachy_opencode.log"   # tail -f this to watch live I/O
+
+
+def _oc_log(text: str) -> None:
+    """Append text to the live opencode I/O log."""
+    with open(OPENCODE_LOG, "a") as f:
+        f.write(text)
+        f.flush()
+
+
+def open_debug_terminal() -> str | None:
+    """
+    Open a new terminal window showing a live tail of the opencode I/O log.
+    Returns the terminal name used, or None if none found.
+    """
+    Path(OPENCODE_LOG).write_text(
+        f"=== Reachy opencode live I/O log ===\n"
+        f"Started: {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+        f"Watching: {OPCODE}\n"
+        f"{'='*40}\n\n"
+    )
+    cmd_tail = f"tail -f {OPENCODE_LOG}"
+    candidates = [
+        ("gnome-terminal", ["gnome-terminal", "--title=Reachy opencode", "--",
+                            "bash", "-c", f"{cmd_tail}; read"]),
+        ("xterm",          ["xterm", "-title", "Reachy opencode", "-bg", "black",
+                            "-fg", "green", "-fa", "Monospace", "-fs", "10",
+                            "-e", cmd_tail]),
+        ("konsole",        ["konsole", "--title", "Reachy opencode",
+                            "-e", "bash", "-c", f"{cmd_tail}; read"]),
+        ("xfce4-terminal", ["xfce4-terminal", "--title=Reachy opencode",
+                            "-e", cmd_tail]),
+    ]
+    for name, args in candidates:
+        if subprocess.run(["which", name], capture_output=True).returncode == 0:
+            subprocess.Popen(args, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return name
+    return None
 
 GROQ_KEY = load_api_key(ROOT)
 if not GROQ_KEY:
@@ -80,17 +119,27 @@ _ACTION_SYSTEM = (
 )
 
 
-def call_opencode(prompt: str, timeout: int = 30) -> str:
+def call_opencode(prompt: str, timeout: int = 30, label: str = "tool") -> str:
     """Run `opencode run` and return the full response text."""
+    ts = datetime.now().strftime("%H:%M:%S")
+    _oc_log(f"\n{'─'*50}\n[{ts}] {label.upper()} CALL\n"
+            f"PROMPT: {prompt[:300]}{'…' if len(prompt)>300 else ''}\n")
     try:
         result = subprocess.run(
             [OPCODE, "run", prompt],
             capture_output=True, text=True, timeout=timeout,
         )
-        return (result.stdout or "").strip()
+        out = (result.stdout or "").strip()
+        err = (result.stderr or "").strip()
+        _oc_log(f"RESPONSE: {out}\n")
+        if err:
+            _oc_log(f"STDERR: {err}\n")
+        return out
     except subprocess.TimeoutExpired:
+        _oc_log("TIMEOUT\n")
         return ""
     except FileNotFoundError:
+        _oc_log("ERROR: opencode not found\n")
         return ""
 
 
@@ -111,7 +160,7 @@ def pick_action(history: list, user_text: str) -> str | None:
     conv = "\n".join(parts)
     prompt = f"{_ACTION_SYSTEM}\n\n{conv}\nuser: {user_text}\nassistant:"
     try:
-        reply = call_opencode(prompt, timeout=10)
+        reply = call_opencode(prompt, timeout=10, label="gesture")
         word = reply.strip().lower().strip(".,!?")
         return word if word in NAMED_GESTURES else None
     except Exception as e:
@@ -311,7 +360,7 @@ class DialogEngine:
                 "Reply with a JSON array of short fact strings, or [] if nothing to remember.\n\n"
                 + conv
             )
-            reply = call_opencode(prompt, timeout=10)
+            reply = call_opencode(prompt, timeout=10, label="memory")
             import json
             try:
                 facts = json.loads(reply)
@@ -465,20 +514,35 @@ class DialogEngine:
             self.listener.set_threshold_mode("normal")
 
     def _stream_from_opencode(self, prompt: str):
-        """Yield characters from `opencode run` as they arrive."""
+        """Yield characters from `opencode run` as they arrive, logging I/O live."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        _oc_log(f"\n{'='*50}\n[{ts}] DIALOG CALL\n"
+                f"PROMPT (tail): …{prompt[-400:]}\n\nRESPONSE: ")
+
         proc = subprocess.Popen(
             [OPCODE, "run", prompt],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True,
         )
+
+        def _drain_stderr():
+            for line in proc.stderr:
+                _oc_log(f"\n[OC] {line.rstrip()}")
+
+        stderr_t = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_t.start()
+
         try:
             while True:
                 chunk = proc.stdout.read(1)
                 if not chunk and proc.poll() is not None:
                     break
                 if chunk:
+                    _oc_log(chunk)
                     yield chunk
         finally:
+            _oc_log("\n[stream end]\n")
+            stderr_t.join(timeout=1)
             proc.terminate()
             proc.wait()
 
@@ -551,6 +615,11 @@ def main():
     log.event(f"  LLM model   : DeepSeek V4 Flash (opencode default)")
     log.event(f"  STT model   : whisper-large-v3 via Groq")
     log.event(f"  TTS voice   : AvaMultilingualNeural (edge-tts)")
+    term = open_debug_terminal()
+    if term:
+        log.event(f"  opencode log: {term} → tail -f {OPENCODE_LOG}")
+    else:
+        log.event(f"  opencode log: tail -f {OPENCODE_LOG}  (no terminal found)")
 
     daemon_proc = None
     try:
