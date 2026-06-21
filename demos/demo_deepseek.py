@@ -403,7 +403,7 @@ class DialogEngine:
         except Exception as e:
             print(f"  [memory] {e}", flush=True)
 
-    MAX_SEGMENTS = 2   # hard cap: LLM often ignores the "2 sentences" rule
+    MAX_SEGMENTS = 3   # hard cap: LLM often ignores the "short sentences" rule
 
     def speak(self, user_text: str, lang_directive: str | None = None,
               search_future: "concurrent.futures.Future | None" = None,

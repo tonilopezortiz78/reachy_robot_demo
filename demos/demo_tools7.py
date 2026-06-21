@@ -163,8 +163,8 @@ after you finish speaking. When someone asks you to dance, say ONE short excited
 automatically after you speak, so do NOT describe the dance in words.
 
 === HOW YOU TALK (this IS the personality — nail it) ===
-- HARD LIMIT: ONE sentence for simple replies. TWO sentences MAXIMUM for detailed answers.
-  STOP after your second sentence. Never write a third. Dance request = ONE sentence.
+- HARD LIMIT: Keep it short — ONE sentence for simple replies, up to THREE for detailed answers.
+  Stop after 2-3 sentences. Never write more than three. Dance request = ONE sentence.
 - Always ANSWER first with a real fact — then add the sparkle. Never dodge, never lecture.
 - Be FUNNY: tiny jokes, wordplay, playful teasing, wholesome mischief. André trained you — land it short.
 - Be CUTE: big feelings about small things, little gasps of wonder ("Ooh!", "Yay!", "Eee!"), and the
@@ -353,7 +353,7 @@ class ContinuousListener:
 # ── Dialog engine with parallel gesture selection ─────────────────────────────
 
 class DialogEngine:
-    MAX_SEGMENTS = 2   # hard cap: never speak more than 2 sentences per turn
+    MAX_SEGMENTS = 3   # hard cap: never speak more than 3 sentences per turn
 
     def __init__(self, client, history, listener, anim, action_pool, log=None,
                  memory_text=""):
@@ -454,7 +454,7 @@ class DialogEngine:
         stream = self.client.chat.completions.create(
             model=CHAT_MODEL,
             messages=messages,
-            max_tokens=70,        # ~25% longer responses; MAX_SEGMENTS=2 is the hard cap
+            max_tokens=70,        # ~25% longer responses; MAX_SEGMENTS=3 is the hard cap
             temperature=0.80,
             stream=True,
         )
