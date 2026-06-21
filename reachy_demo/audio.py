@@ -237,6 +237,84 @@ def assert_mic_ok() -> dict:
         "restart. Diagnostic: ./run.sh tools/test_mic.py")
 
 
+# ── Music/speaker audio detection ──────────────────────────────────────────────
+# Detects whether the robot speaker is producing sound by recording a SHORT
+# burst from a SECOND microphone (laptop built-in mic) and measuring RMS.
+# The laptop mic is on a different ALSA device so it doesn't conflict with the
+# robot mic that the VAD listener holds open during conversation demos.
+#
+# Usage in dance loop:
+#   wait_for_music_end(MIC_FALLBACK, timeout=30)
+#   → blocks until no audio detected for ~0.5 s, or timeout.
+#   Returns True if music ended, False if timeout.
+
+MIC_FALLBACK = "alsa_input.pci-0000_00_1f.3.analog-stereo"  # laptop built-in mic
+_DETECT_RATE  = 16000
+_DETECT_CHUNK = 1024        # 64 ms
+_MUSIC_RMS_THRESH = 15      # RMS below this = silence (tune empirically)
+_SILENCE_CONFIRM_MS = 600   # ms of consecutive silence → music truly ended
+
+
+def wait_for_music_end(mic_device: str | None = None,
+                       timeout_s: float = 30.0,
+                       log_func: callable = print) -> bool:
+    """
+    Record from `mic_device` (defaults to laptop mic fallback) and monitor RMS
+    levels. Blocks until the audio level stays below MUSIC_RMS_THRESH for
+    SILENCE_CONFIRM_MS — meaning the speaker has stopped producing sound.
+
+    Uses the laptop's built-in mic (different USB device from the robot mic),
+    so it does NOT conflict with the ContinuousListener's pacat on the robot mic.
+
+    Returns True when silence confirmed (music ended).
+    Returns False on timeout.
+    """
+    device = mic_device or MIC_FALLBACK
+    n_samples = int(_DETECT_RATE * _SILENCE_CONFIRM_MS / 1000)
+    n_chunks = max(1, n_samples // _DETECT_CHUNK)
+    silence_chunks = 0
+    deadline = time.time() + timeout_s
+
+    try:
+        proc = subprocess.Popen(
+            ["pacat", "--record", "--raw", f"--device={device}",
+             f"--rate={_DETECT_RATE}", "--channels=1", "--format=s16le"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        log_func(f"  [music-detect] cannot open {device}: {e}")
+        log_func("  [music-detect] falling back to process check")
+        return False
+
+    try:
+        while time.time() < deadline:
+            raw = proc.stdout.read(_DETECT_CHUNK * 2)
+            if not raw or len(raw) < _DETECT_CHUNK * 2:
+                log_func("  [music-detect] capture stream died — assuming silence")
+                return True
+
+            arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+            rms = float(np.sqrt(np.mean(arr ** 2)))
+
+            if rms < _MUSIC_RMS_THRESH:
+                silence_chunks += 1
+                if silence_chunks >= n_chunks:
+                    log_func(f"  [music-detect] silence confirmed (RMS {rms:.0f})")
+                    return True
+            else:
+                silence_chunks = 0
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+    log_func("  [music-detect] timeout — no silence detected")
+    return False
+
+
 # ── VAD constants ─────────────────────────────────────────────────────────────
 
 MIC_RATE       = 16000

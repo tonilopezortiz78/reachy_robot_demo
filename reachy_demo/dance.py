@@ -16,10 +16,13 @@ Music:       ROOT/music/macarena.mp3 at +6 dB via ffmpeg → ALSA.
 """
 import math
 import subprocess
+import threading
 import time
 from pathlib import Path
 
-from reachy_demo.audio import SPEAKER
+import numpy as np
+
+from reachy_demo.audio import SPEAKER, MIC_FALLBACK
 from reachy_demo.tts_edge import synth_to_file
 
 ROOT = Path(__file__).parent.parent
@@ -169,7 +172,7 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
     try:
         excited_chirp()   # clears ALSA + signals excitement
 
-         music_proc = subprocess.Popen(
+        music_proc = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
              "-stream_loop", "2", "-i", str(MUSIC_PATH),
              "-af", "volume=2.0", "-f", "alsa", SPEAKER],
@@ -210,10 +213,48 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
         mini.play_move(emotions.get("enthusiastic2"),  play_frequency=80.0, sound=False)
         mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
 
-        # ── Keep dancing until music actually stops ─────────────────
-        while music_proc.poll() is None:
+        # ── REAL audio detection: monitor laptop mic for silence ─────
+        # Background thread reads from laptop mic (different device from
+        # robot mic, so no conflict). When RMS stays below threshold for
+        # ~600ms → music has truly stopped on the speaker.
+        music_stopped = threading.Event()
+
+        def _monitor():
+            try:
+                det = subprocess.Popen(
+                    ["pacat", "--record", "--raw", f"--device={MIC_FALLBACK}",
+                     "--rate=16000", "--channels=1", "--format=s16le"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                )
+                silence = 0
+                needed = int(16000 * 0.6 / 1024)  # ~600ms
+                while not music_stopped.is_set():
+                    raw = det.stdout.read(2048)
+                    if not raw or len(raw) < 2048:
+                        break
+                    rms = float(np.sqrt(np.mean(
+                        np.frombuffer(raw, dtype=np.int16).astype(np.float32) ** 2)))
+                    if rms < 15:
+                        silence += 1
+                        if silence >= needed:
+                            music_stopped.set()
+                            break
+                    else:
+                        silence = 0
+            finally:
+                try:
+                    det.terminate()
+                    det.wait(timeout=1)
+                except Exception:
+                    pass
+                music_stopped.set()
+
+        threading.Thread(target=_monitor, daemon=True).start()
+
+        # Main thread: keep dancing until the monitor hears silence
+        while not music_stopped.is_set():
             for pose in _MACARENA_POSES:
-                if music_proc.poll() is not None:
+                if music_stopped.is_set():
                     break
                 _beat(mini, pose, scale=1.6, target_t=time.time() + _BEAT)
 
