@@ -757,7 +757,7 @@ def main():
                         if lang_known:
                             speak_cue(listener, "thinking", current_lang)
 
-                        stop_thinking.clear()
+                        stop_thinking = threading.Event()   # fresh each turn — no cross-turn bleed
                         tick_thread = start_thinking_ticks(stop_thinking)
 
                         audio_path = log.save_audio(pcm)

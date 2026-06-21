@@ -193,13 +193,11 @@ def do_macarena(mini, dances, emotions, anim, log=None):
             elif cycle > 1:
                 _jump(mini)
 
-        # Climax
-        excited_chirp()
+        # Climax — no excited_chirp() here: music ffmpeg holds ALSA and chirps would fail
         _spin360(mini)
         mini.play_move(dances.get("dizzy_spin"),       play_frequency=80.0, sound=False)
         _spin360(mini)
         mini.play_move(dances.get("polyrhythm_combo"), play_frequency=80.0, sound=False)
-        excited_chirp()
         _spin360(mini)
         mini.play_move(emotions.get("enthusiastic2"),  play_frequency=80.0, sound=False)
         mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
