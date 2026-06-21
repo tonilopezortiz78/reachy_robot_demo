@@ -190,7 +190,7 @@ def stream_and_speak(client, voice, history: list, user_text: str, anim) -> str:
         _stream = client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
-            max_tokens=45,
+            max_tokens=55,
             temperature=0.90,
             stream=True,
         )

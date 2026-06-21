@@ -454,7 +454,7 @@ class DialogEngine:
         stream = self.client.chat.completions.create(
             model=CHAT_MODEL,
             messages=messages,
-            max_tokens=55,        # 1-2 short sentences; MAX_SEGMENTS=2 is the hard cap
+            max_tokens=70,        # ~25% longer responses; MAX_SEGMENTS=2 is the hard cap
             temperature=0.80,
             stream=True,
         )
