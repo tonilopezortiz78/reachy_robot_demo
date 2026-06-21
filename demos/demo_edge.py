@@ -157,7 +157,7 @@ def stream_and_speak(client, history: list, user_text: str, anim,
     stream = client.chat.completions.create(
         model=MODEL,
         messages=messages,
-        max_tokens=55,
+        max_tokens=69,
         temperature=0.90,
         stream=True,
     )

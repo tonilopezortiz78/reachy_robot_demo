@@ -340,7 +340,7 @@ class DialogEngine:
         stream = self.client.chat.completions.create(
             model=MODEL,
             messages=messages,
-            max_tokens=55, temperature=0.90, stream=True,
+            max_tokens=69, temperature=0.90, stream=True,
         )
 
         # Segments are (gesture_name | None, spoken_text). Built as the
