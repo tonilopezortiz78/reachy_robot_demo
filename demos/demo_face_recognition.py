@@ -163,7 +163,6 @@ def _synth_and_play(voice: PiperVoice, text: str):
              out],
             check=True,
         )
-        finally_path = Path(raw)  # raw cleaned in finally below
         proc = subprocess.Popen(
             ["aplay", "-D", SPEAKER, "-q", out],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

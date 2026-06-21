@@ -94,7 +94,6 @@ def _detect_robot_mic(default: str, wait_s: float = _MIC_DETECT_WAIT_S) -> str:
     chosen source is un-suspended before returning so the first capture works.
     """
     deadline = time.time() + max(0.0, wait_s)
-    first_pass = True
     while True:
         sources = _list_input_sources()
         for want in _MIC_PREFERENCE:
@@ -106,7 +105,6 @@ def _detect_robot_mic(default: str, wait_s: float = _MIC_DETECT_WAIT_S) -> str:
             break
         # Wait a beat and re-poll — the robot mic may still be appearing.
         time.sleep(0.5)
-        first_pass = False
     return default
 
 

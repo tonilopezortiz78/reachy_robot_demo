@@ -14,18 +14,15 @@ Run:  ./run.sh demos/demo_dance.py
 """
 import math
 import subprocess
-import threading
 import time
 import wave
 from pathlib import Path
 
-import numpy as np
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
 
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
-from reachy_demo.audio import MIC_FALLBACK
 from reachy_demo.tts_edge import synth_to_file  # PITCH +8Hz set in tts_edge.py
 
 ROOT        = Path(__file__).parent.parent

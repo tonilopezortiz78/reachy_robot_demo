@@ -24,33 +24,30 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-import torch
 from groq import Groq
-from silero_vad import load_silero_vad, VADIterator
+from silero_vad import load_silero_vad
 
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
-from reachy_mini.utils import create_head_pose
 
 from reachy_demo.animator import Animator, NAMED_GESTURES
-import reachy_demo.audio as audio  # for live audio.MIC after redetect_mic()
 from reachy_demo.audio import (
-    MIC, MIC_RATE, VAD_CHUNK, SPEAKER,
+    MIC_RATE, SPEAKER,
     assert_mic_ok, boot_beeps, cleanup_orphan_capture, error_chime,
-    pcm_to_wav_bytes, redetect_mic, speaking_chime, start_thinking_ticks,
+    pcm_to_wav_bytes, speaking_chime, start_thinking_ticks,
     startup_device_report, thinking_cue,
 )
+from reachy_demo.listener import ContinuousListener
 from reachy_demo.cues import speak_cue, prewarm, set_translator
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
 from reachy_demo.groq_client import (
-    load_api_key, transcribe_lang_robust, language_directive, resolve_language,
+    load_api_key, transcribe_lang_robust, language_directive,
     is_hallucination,
 )
 from reachy_demo.memory import (
-    load_memories, memory_block, extract_memories, remember,
+    load_memories, memory_block, remember,
 )
-from reachy_demo.dance import DANCE_KEYWORDS, do_macarena, excited_chirp
+from reachy_demo.dance import DANCE_KEYWORDS, do_macarena
 from reachy_demo.search import web_search
 from reachy_demo.session_log import SessionLogger
 from reachy_demo.text import SENTENCE_END, clean_for_tts
@@ -109,12 +106,7 @@ GROQ_KEY = load_api_key(ROOT)
 if not GROQ_KEY:
     sys.exit("ERROR: GROQ_API_KEY not found in .env or environment")
 
-THRESH_NORMAL   = 0.45
-THRESH_BARGE_IN = 0.75
-SILENCE_MS      = 700
-MIN_SPEECH_S    = 0.30
-TAIL_FRAMES     = 10
-BARGE_IN_FRAMES = 6
+# VAD settings live in reachy_demo/listener.py (shared by all talking demos).
 REPEAT_COOLDOWN_S = 15.0
 
 _GESTURE_NAMES = "|".join(re.escape(name) for name in NAMED_GESTURES.keys())
@@ -246,156 +238,6 @@ Example: "[amazed] That is the most incredible thing I have ever heard!"
 - CRITICAL: Zero asterisks. No *beep*, no *smile*, no **bold**, no *italic*, no action markers, no emotes.\
 """
 
-class ContinuousListener:
-    """
-    Background thread: opens pacat once, runs VAD continuously, posts events.
-    Identical to demo_tools7.py implementation.
-    """
-
-    def __init__(self, vad_model, event_queue, log=None):
-        self.vad_model = vad_model
-        self.q = event_queue
-        self.log = log
-        self._stop = threading.Event()
-        self._muted = False
-        self._threshold_mode = "normal"
-        self._consecutive_triggers = 0
-        self._in_speech = False
-        self._ended = False
-        self._tail_count = 0
-        self._speech_buf = []
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-
-    def start(self):
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        self._thread.join(timeout=2)
-
-    def mute(self):
-        self._muted = True
-
-    def unmute(self):
-        self._muted = False
-
-    def set_threshold_mode(self, mode: str):
-        assert mode in ("normal", "barge_in")
-        self._threshold_mode = mode
-        if mode == "barge_in" and not self._in_speech:
-            self._consecutive_triggers = 0
-
-    def _current_threshold(self) -> float:
-        return THRESH_BARGE_IN if self._threshold_mode == "barge_in" else THRESH_NORMAL
-
-    def _open_capture(self):
-        """Open a fresh pacat capture on the live, re-detected robot mic so a
-        replug / PipeWire restart that changed the source name is picked up."""
-        device = audio.MIC
-        return subprocess.Popen(
-            ["pacat", "--record", "--raw",
-             f"--device={device}",
-             f"--rate={MIC_RATE}", "--channels=1", "--format=s16le"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        ), device
-
-    def _loop(self):
-        arecord, device = self._open_capture()
-        if self.log:
-            self.log.event(f"  [listener] capturing on {device}")
-        vad_iter = None
-        recover_attempts = 0
-        try:
-            while not self._stop.is_set():
-                if vad_iter is None:
-                    vad_iter = VADIterator(
-                        self.vad_model, sampling_rate=MIC_RATE,
-                        threshold=self._current_threshold(),
-                        min_silence_duration_ms=SILENCE_MS,
-                    )
-                    self._consecutive_triggers = 0
-                    self._in_speech = False
-                    self._ended = False
-                    self._tail_count = 0
-                    self._speech_buf = []
-
-                raw = arecord.stdout.read(VAD_CHUNK * 2)
-                if not raw or len(raw) < VAD_CHUNK * 2:
-                    # Mic stream died (replug / PipeWire restart / suspend).
-                    # RE-DETECT the robot mic and reopen rather than giving up
-                    # forever; only surface a hard error after 5 failed reopens.
-                    if self.log:
-                        self.log.event(
-                            f"  [listener] stream closed (got "
-                            f"{len(raw) if raw else 0} bytes) — recovering...")
-                    try:
-                        arecord.terminate(); arecord.wait(timeout=1.0)
-                    except Exception:
-                        pass
-                    recover_attempts += 1
-                    if recover_attempts > 5:
-                        self.q.put({"type": "mic_error",
-                                    "reason": "mic stream kept closing after 5 "
-                                              "reopen attempts — device lost"})
-                        break
-                    cleanup_orphan_capture()
-                    new_dev = redetect_mic()
-                    time.sleep(0.4)
-                    arecord, device = self._open_capture()
-                    if self.log and new_dev != device:
-                        self.log.event(f"  [listener] re-detected mic: {new_dev}")
-                    vad_iter = None
-                    continue
-                recover_attempts = 0
-
-                if self._muted:
-                    vad_iter = None
-                    continue
-
-                if vad_iter.threshold != self._current_threshold():
-                    vad_iter = None
-                    continue
-
-                audio_f32 = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-                result = vad_iter(torch.from_numpy(audio_f32))
-
-                if self._threshold_mode == "barge_in" and not self._in_speech:
-                    if result and "start" in result:
-                        self._consecutive_triggers += 1
-                        if self._consecutive_triggers >= BARGE_IN_FRAMES:
-                            self._in_speech = True
-                            self._speech_buf = [raw]
-                            self.q.put({"type": "start"})
-                    else:
-                        self._consecutive_triggers = max(0, self._consecutive_triggers - 1)
-                else:
-                    if result and "start" in result and not self._in_speech:
-                        self._in_speech = True
-                        self._speech_buf = [raw]
-                        self.q.put({"type": "start"})
-
-                if self._in_speech:
-                    self._speech_buf.append(raw)
-
-                if result and "end" in result and self._in_speech and not self._ended:
-                    self._ended = True
-
-                if self._ended:
-                    self._tail_count += 1
-                    if self._tail_count >= TAIL_FRAMES:
-                        min_frames = int(MIN_SPEECH_S * MIC_RATE / VAD_CHUNK)
-                        if len(self._speech_buf) >= min_frames:
-                            self.q.put({"type": "end", "pcm": b"".join(self._speech_buf)})
-                        self._in_speech = False
-                        self._ended = False
-                        self._tail_count = 0
-                        self._speech_buf = []
-                        self._consecutive_triggers = 0
-        finally:
-            arecord.terminate()
-            arecord.wait()
-
-
 class DialogEngine:
     """Manages the turn-taking loop: listen STT → opencode LLM → TTS → speak."""
 
@@ -419,7 +261,6 @@ class DialogEngine:
                 + conv
             )
             reply = call_opencode(prompt, timeout=10, label="memory")
-            import json
             try:
                 facts = json.loads(reply)
             except json.JSONDecodeError:
@@ -739,9 +580,9 @@ def main():
     log = SessionLogger(ROOT, "demo_deepseek")
     log.event("Reachy NS Ambassador — opencode + DeepSeek V4 Flash")
     log.event(f"  LLM harness : {OPCODE}")
-    log.event(f"  LLM model   : DeepSeek V4 Flash (opencode default)")
-    log.event(f"  STT model   : whisper-large-v3 via Groq")
-    log.event(f"  TTS voice   : AvaMultilingualNeural (edge-tts)")
+    log.event("  LLM model   : DeepSeek V4 Flash (opencode default)")
+    log.event("  STT model   : whisper-large-v3 via Groq")
+    log.event("  TTS voice   : AvaMultilingualNeural (edge-tts)")
     log.event(f"  opencode log: tail -f {OPENCODE_LOG}")
 
     daemon_proc = None
@@ -879,7 +720,6 @@ def main():
                             anim.set_state(Animator.LISTENING)
                             continue
 
-                        overrode = bool(stt_retried)
                         log.event(
                             f"STT {stt_dt:.2f}s  final=[{final_lang or '?'}]"
                             f"{f' (romaji retry)' if stt_retried else ''}"

@@ -31,28 +31,26 @@ import threading
 import time
 from pathlib import Path
 
-import numpy as np
-import torch
 from groq import Groq
-from silero_vad import load_silero_vad, VADIterator
+from silero_vad import load_silero_vad
 
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
 
 from reachy_demo.animator import Animator, NAMED_GESTURES
-from reachy_demo.dance import DANCE_KEYWORDS, do_macarena, excited_chirp
+from reachy_demo.dance import DANCE_KEYWORDS, do_macarena
 from reachy_demo.search import web_search
-import reachy_demo.audio as audio  # for live audio.MIC after redetect_mic()
+from reachy_demo.listener import ContinuousListener
 from reachy_demo.audio import (
-    MIC, MIC_RATE, VAD_CHUNK, SPEAKER,
+    MIC_RATE, SPEAKER,
     assert_mic_ok, boot_beeps, cleanup_orphan_capture, error_chime,
-    pcm_to_wav_bytes, redetect_mic, speaking_chime, startup_device_report,
+    pcm_to_wav_bytes, speaking_chime, startup_device_report,
     start_thinking_ticks, thinking_cue,
 )
 from reachy_demo.cues import speak_cue, prewarm, set_translator
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
 from reachy_demo.groq_client import (
-    load_api_key, transcribe_lang_robust, language_directive, resolve_language,
+    load_api_key, transcribe_lang_robust, language_directive,
     is_hallucination,
 )
 from reachy_demo.memory import (
@@ -83,13 +81,7 @@ CHAT_MODEL   = "meta-llama/llama-4-scout-17b-16e-instruct"   # natively multilin
 ACTION_MODEL = "llama-3.1-8b-instant"
 MODEL = CHAT_MODEL   # back-compat alias (logging, etc.)
 
-# ── VAD settings ──────────────────────────────────────────────────────────────
-THRESH_NORMAL   = 0.45
-THRESH_BARGE_IN = 0.75
-SILENCE_MS      = 700
-MIN_SPEECH_S    = 0.30
-TAIL_FRAMES     = 10
-BARGE_IN_FRAMES = 6
+# VAD settings live in reachy_demo/listener.py (shared by all talking demos).
 
 # Min seconds between "sorry, could you repeat?" prompts.
 # 15s is conservative — even a noisy room shouldn't trigger it more than once
@@ -215,173 +207,6 @@ For sports/food/etc., admit you don't know much, then bounce it back to tech, AI
 - One or two short sentences, ~20 words max, in the user's language. Answer first, then flavour.
 - CRITICAL: Never use asterisks in any form. No *beep*, no *smile*, no **bold**, no *italic*, no action markers, no emotes. Zero asterisks. This is voice — only say words that should be spoken aloud.\
 """
-
-
-# ── Continuous VAD listener (copied from demo_dialog.py) ─────────────────────
-
-class ContinuousListener:
-    """
-    Background thread: opens pacat once, runs VAD continuously, posts events.
-
-    Events (dict):
-      {"type": "start"}                  — user started speaking
-      {"type": "end", "pcm": bytes}      — user stopped speaking, full utterance audio
-
-    Threshold mode is toggled by the main thread:
-      normal   (0.45) — when robot is silent
-      barge_in (0.75) — when robot is speaking, requires 200 ms continuous trigger
-    """
-
-    def __init__(self, vad_model, event_queue, log=None):
-        self.vad_model = vad_model
-        self.q = event_queue
-        self.log = log
-        self._stop = threading.Event()
-        self._muted = False
-        self._threshold_mode = "normal"
-        self._consecutive_triggers = 0
-        self._in_speech = False
-        self._ended = False
-        self._tail_count = 0
-        self._speech_buf = []
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-
-    def start(self):
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        self._thread.join(timeout=2)
-
-    def mute(self):
-        """Discard mic input (used while the robot plays a cue, so it never
-        captures its own voice through speaker→mic bleed)."""
-        self._muted = True
-
-    def unmute(self):
-        self._muted = False
-
-    def set_threshold_mode(self, mode: str):
-        assert mode in ("normal", "barge_in")
-        self._threshold_mode = mode
-        if mode == "barge_in" and not self._in_speech:
-            self._consecutive_triggers = 0
-
-    def _current_threshold(self) -> float:
-        return THRESH_BARGE_IN if self._threshold_mode == "barge_in" else THRESH_NORMAL
-
-    def _open_capture(self):
-        """Open a fresh pacat capture on the live, re-detected robot mic.
-        Reading audio.MID live (not the frozen import) means a replug / PipeWire
-        restart that changed the source name is picked up on reopen."""
-        device = audio.MIC
-        return subprocess.Popen(
-            ["pacat", "--record", "--raw",
-             f"--device={device}",
-             f"--rate={MIC_RATE}", "--channels=1", "--format=s16le"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        ), device
-
-    def _loop(self):
-        arecord, device = self._open_capture()
-        if self.log:
-            self.log.event(f"  [listener] capturing on {device}")
-        vad_iter = None
-        recover_attempts = 0   # consecutive reopen attempts after a stream death
-        try:
-            while not self._stop.is_set():
-                if vad_iter is None:
-                    vad_iter = VADIterator(
-                        self.vad_model, sampling_rate=MIC_RATE,
-                        threshold=self._current_threshold(),
-                        min_silence_duration_ms=SILENCE_MS,
-                    )
-                    self._consecutive_triggers = 0
-                    self._in_speech = False
-                    self._ended = False
-                    self._tail_count = 0
-                    self._speech_buf = []
-
-                raw = arecord.stdout.read(VAD_CHUNK * 2)
-                if not raw or len(raw) < VAD_CHUNK * 2:
-                    # Mic stream died — device lost, suspended, or grabbed by
-                    # another process (e.g. cable replug, PipeWire restart).
-                    # Instead of giving up forever, RE-DETECT the robot mic and
-                    # reopen — this is the "robot stops listening after I touch
-                    # the audio settings" recovery. Only surface a hard error if
-                    # several reopen attempts in a row fail.
-                    if self.log:
-                        self.log.event(
-                            f"  [listener] stream closed (got "
-                            f"{len(raw) if raw else 0} bytes) — recovering...")
-                    try:
-                        arecord.terminate(); arecord.wait(timeout=1.0)
-                    except Exception:
-                        pass
-                    recover_attempts += 1
-                    if recover_attempts > 5:
-                        self.q.put({"type": "mic_error",
-                                    "reason": "mic stream kept closing after 5 "
-                                              "reopen attempts — device lost"})
-                        break
-                    cleanup_orphan_capture()
-                    new_dev = redetect_mic()        # re-poll PipeWire for the robot mic
-                    time.sleep(0.4)                 # let the device settle
-                    arecord, device = self._open_capture()
-                    if self.log and new_dev != device:
-                        self.log.event(f"  [listener] re-detected mic: {new_dev}")
-                    vad_iter = None
-                    continue
-                recover_attempts = 0   # got a good frame — reset the recovery counter
-
-                if self._muted:
-                    # Robot is speaking a cue — discard this audio and reset VAD
-                    # state so the cue is never mistaken for the user talking.
-                    vad_iter = None
-                    continue
-
-                if vad_iter.threshold != self._current_threshold():
-                    vad_iter = None
-                    continue
-
-                audio_f32 = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-                result = vad_iter(torch.from_numpy(audio_f32))
-
-                if self._threshold_mode == "barge_in" and not self._in_speech:
-                    if result and "start" in result:
-                        self._consecutive_triggers += 1
-                        if self._consecutive_triggers >= BARGE_IN_FRAMES:
-                            self._in_speech = True
-                            self._speech_buf = [raw]
-                            self.q.put({"type": "start"})
-                    else:
-                        self._consecutive_triggers = max(0, self._consecutive_triggers - 1)
-                else:
-                    if result and "start" in result and not self._in_speech:
-                        self._in_speech = True
-                        self._speech_buf = [raw]
-                        self.q.put({"type": "start"})
-
-                if self._in_speech:
-                    self._speech_buf.append(raw)
-
-                if result and "end" in result and self._in_speech and not self._ended:
-                    self._ended = True
-
-                if self._ended:
-                    self._tail_count += 1
-                    if self._tail_count >= TAIL_FRAMES:
-                        min_frames = int(MIN_SPEECH_S * MIC_RATE / VAD_CHUNK)
-                        if len(self._speech_buf) >= min_frames:
-                            self.q.put({"type": "end", "pcm": b"".join(self._speech_buf)})
-                        self._in_speech = False
-                        self._ended = False
-                        self._tail_count = 0
-                        self._speech_buf = []
-                        self._consecutive_triggers = 0
-        finally:
-            arecord.terminate()
-            arecord.wait()
 
 
 # ── Dialog engine with parallel gesture selection ─────────────────────────────
@@ -885,7 +710,6 @@ def main():
                             anim.set_state(Animator.LISTENING)
                             continue
 
-                        overrode = bool(stt_retried)
                         log.event(
                             f"STT {stt_dt:.2f}s  final=[{final_lang or '?'}]"
                             f"{f' (romaji retry)' if stt_retried else ''}"
