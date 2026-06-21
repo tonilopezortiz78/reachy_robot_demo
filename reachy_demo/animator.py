@@ -113,10 +113,14 @@ GESTURE_TEMPLATES = [
     (1,  0.00,  0.00,  0.00, -0.20, 0.00,  0.00, 1.20),  # body R
 ]
 
-# State-dependent gesture rate (events per second)
+# State-dependent gesture rate (events per second).
+# LISTENING is deliberately LOW: every servo move is mechanical noise the robot's
+# own mic picks up, which seeds false VAD triggers / Whisper hallucinations while
+# the visitor is talking. Keep it nearly still (occasional gentle flick) while
+# listening; be lively again when idle/speaking.
 GESTURE_RATE = {
     "idle":      0.75,
-    "listening": 1.75,
+    "listening": 0.45,   # was 1.75 — quiet mic while the user speaks
     "thinking":  1.15,
     "speaking":  2.00,
 }
@@ -134,7 +138,9 @@ ANTENNA_NEUTRAL = {   # gentle pull toward this when in this state
 }
 ANTENNA_LIVENESS = {
     "idle":      {"target_lo": -0.30, "target_hi":  0.35, "interval_lo": 0.20, "interval_hi": 0.50},
-    "listening": {"target_lo":  0.10, "target_hi":  0.60, "interval_lo": 0.10, "interval_hi": 0.25},
+    # listening: slow, small antenna drift so the servos are nearly silent while
+    # the visitor talks (longer intervals = fewer moves = less mic noise).
+    "listening": {"target_lo":  0.25, "target_hi":  0.50, "interval_lo": 0.60, "interval_hi": 1.20},
     "thinking":  {"target_lo": -0.15, "target_hi":  0.45, "interval_lo": 0.15, "interval_hi": 0.35},
     "speaking":  {"target_lo": -0.05, "target_hi":  0.55, "interval_lo": 0.08, "interval_hi": 0.22},
 }
@@ -409,14 +415,17 @@ class Animator:
                     ar =  0.20 + _s(0.15, 0.35, t, phase=1.2)
 
                 elif state == self.LISTENING:
-                    # Head tilted attentively, body leaning in, antennas perked + fluttering
-                    p  =  0.10 + _s(0.05, 0.30, t) + _s(0.02, 0.72, t)
-                    y  =  _s(0.20, 0.28, t) + _s(0.07, 0.67, t) + _s(0.02, 1.40, t)
-                    r  =  0.05 + _s(0.05, 0.22, t) + _s(0.02, 0.51, t)
-                    by =  _s(0.15, 0.15, t) + _s(0.05, 0.36, t)
-                    # Alternating flutter — one antenna chases the other
-                    al =  0.55 + _s(0.22, 0.55, t)
-                    ar =  0.40 + _s(0.22, 0.55, t, phase=math.pi * 0.8)
+                    # Nearly STILL while the visitor talks — small, slow motion so
+                    # the servos stay quiet and don't bleed mechanical noise into
+                    # the mic (the cause of false triggers). A gentle attentive
+                    # tilt + tiny sway is enough to still look alive.
+                    p  =  0.10 + _s(0.015, 0.18, t)
+                    y  =  _s(0.05, 0.16, t)
+                    r  =  0.05 + _s(0.015, 0.14, t)
+                    by =  _s(0.04, 0.10, t)
+                    # Antennas: held perked with only a whisper of movement
+                    al =  0.45 + _s(0.05, 0.30, t)
+                    ar =  0.40 + _s(0.05, 0.30, t, phase=math.pi * 0.8)
 
                 elif state == self.THINKING:
                     # Pose library: drifts between 10 contemplative poses with smooth blends

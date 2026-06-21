@@ -13,7 +13,9 @@ zero synthesis latency.
 
 Languages not in the table fall back to English.
 """
+import hashlib
 import json
+import random
 import subprocess
 import threading
 from pathlib import Path
@@ -45,6 +47,29 @@ CUE_PHRASES = {
 
 _LISTENING, _THINKING, _REPEAT = 0, 1, 2
 _KIND_INDEX = {"listening": _LISTENING, "thinking": _THINKING, "repeat": _REPEAT}
+
+# Varied, natural "thinking out loud" fillers spoken the moment the user stops,
+# so the robot acknowledges immediately ("Hmm, let me think...") instead of going
+# silent. A random one is picked per turn so it never sounds robotic. Languages
+# without a list fall back to the single CUE_PHRASES "thinking" phrase.
+THINKING_VARIANTS = {
+    "English":    ["Hmm, let me think...", "Let me see...", "One moment...",
+                   "Umm, let me check...", "Good one, let me think..."],
+    "Spanish":    ["Mmm, déjame pensar...", "A ver...", "Un momento...",
+                   "Déjame ver..."],
+    "French":     ["Hmm, laisse-moi réfléchir...", "Voyons voir...",
+                   "Un instant...", "Attends, je réfléchis..."],
+    "German":     ["Hmm, lass mich überlegen...", "Mal sehen...",
+                   "Einen Moment...", "Warte, ich denke nach..."],
+    "Portuguese": ["Hmm, deixa eu pensar...", "Deixa ver...", "Um momento..."],
+    "Italian":    ["Mmm, fammi pensare...", "Vediamo...", "Un attimo..."],
+    "Japanese":   ["うーん、ちょっと考えるね…", "ええと…", "ちょっと待ってね…"],
+    "Chinese":    ["嗯，让我想想…", "我看看…", "稍等一下…"],
+    "Korean":     ["음, 생각해 볼게요…", "어디 보자…", "잠시만요…"],
+    "Arabic":     ["مم، دعني أفكّر…", "لنرَ…", "لحظة…"],
+    "Russian":    ["Хм, дай подумать…", "Посмотрим…", "Секундочку…"],
+    "Hindi":      ["हम्म, सोचने दो…", "देखता हूँ…", "एक पल…"],
+}
 
 # ── On-the-fly translation for languages not in CUE_PHRASES ───────────────────
 # A visitor speaking Thai, Vietnamese, Polish, Turkish, … would otherwise hear
@@ -182,10 +207,59 @@ def speak_cue(listener, kind: str, lang: str):
             listener.unmute()
 
 
+# ── Verbal thinking fillers ("Hmm, let me think...") ──────────────────────────
+
+def _thinking_phrase(lang: str) -> str:
+    """Pick a random natural filler for `lang`, falling back to the single
+    CUE_PHRASES thinking line (translated on the fly) for unlisted languages."""
+    variants = THINKING_VARIANTS.get(lang)
+    if variants:
+        return random.choice(variants)
+    return _phrase("thinking", lang)
+
+
+def _wav_for_text(text: str) -> str | None:
+    """Cache a synthesised WAV keyed by the text itself (for the random fillers,
+    which don't fit the fixed (kind, lang) cue cache). One synth per phrase ever."""
+    h = hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
+    path = CACHE / f"think_{h}.wav"
+    if not path.exists():
+        try:
+            CACHE.mkdir(parents=True, exist_ok=True)
+            tmp = synth_to_file(text)
+            Path(tmp).rename(path)
+        except Exception:
+            return None
+    return str(path)
+
+
+def speak_thinking(listener, lang: str):
+    """Speak a random 'thinking out loud' filler in `lang`, blocking until done,
+    with the listener muted during playback (same speaker→mic protection as
+    speak_cue). Intended to run WHILE STT executes in another thread, so it adds
+    no latency — the robot acknowledges instantly and STT finishes underneath."""
+    wav = _wav_for_text(_thinking_phrase(lang))
+    if listener is not None:
+        listener.mute()
+    try:
+        if wav:
+            proc = subprocess.Popen(
+                ["aplay", "-D", SPEAKER, "-q", wav],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            proc.wait()
+    finally:
+        if listener is not None:
+            listener.unmute()
+
+
 def prewarm(lang: str = "English"):
-    """Pre-generate both cues for a language in the background so first use is instant."""
+    """Pre-generate cues + thinking fillers for a language in the background so
+    first use is instant."""
     def _gen():
         cue_wav("listening", lang)
         cue_wav("thinking", lang)
         cue_wav("repeat", lang)
+        for phrase in THINKING_VARIANTS.get(lang, []):
+            _wav_for_text(phrase)
     threading.Thread(target=_gen, daemon=True).start()

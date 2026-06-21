@@ -22,6 +22,7 @@ import wave
 
 import numpy as np
 import torch
+from scipy.signal import butter, sosfilt
 from silero_vad import VADIterator
 
 # ── Hardware constants ────────────────────────────────────────────────────────
@@ -789,3 +790,37 @@ def pcm_to_wav_bytes(pcm: bytes) -> bytes:
         wf.setframerate(MIC_RATE)
         wf.writeframes(pcm)
     return buf.getvalue()
+
+
+# ── Voice band-pass (keep only the human-voice spectrum) ──────────────────────
+# Band-pass the captured audio to roughly the human-voice range, trimming the
+# sub-bass motor/power hum below it and the top-end hiss/servo whine above it
+# (a ~5 kHz servo whine showed up in recorded clips). Applied before the speech
+# gate + Whisper so out-of-band noise can't pad the energy or seed a phantom.
+#
+# IMPORTANT — a fixed frequency band is only HYGIENE, not the real fix. Lots of
+# noise lives INSIDE the voice band (a bystander talking, broadband hiss), and no
+# fixed filter can separate that from the visitor. The actual "is this human
+# voice, not noise" decision is the Silero voiced-ratio gate in speech_gate.py,
+# which models the harmonic/formant structure of speech — that's why it cleanly
+# rejected the phantoms (voiced ~0.0) that had plenty of in-band energy.
+_VOICE_LO = 100.0     # cut sub-bass rumble / motor & USB-power hum
+_VOICE_HI = 7000.0    # cut top-end hiss / servo whine (just under 8 kHz Nyquist)
+_bp_sos = None
+
+
+def voice_filter_pcm(pcm: bytes, lo: float = _VOICE_LO, hi: float = _VOICE_HI,
+                     rate: int = MIC_RATE) -> bytes:
+    """Band-pass `pcm` (int16 mono) to the human-voice range. Cheap (~1ms) and
+    safe on short clips (returns input unchanged if too short). See note above:
+    this is hygiene; speech_gate.is_real_speech is the real noise discriminator."""
+    global _bp_sos
+    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    if arr.size < 32:
+        return pcm
+    if _bp_sos is None:
+        ny = rate / 2.0
+        _bp_sos = butter(2, [lo / ny, min(hi, ny * 0.99) / ny],
+                         btype="band", output="sos")
+    out = sosfilt(_bp_sos, arr)
+    return np.clip(out, -32768, 32767).astype(np.int16).tobytes()

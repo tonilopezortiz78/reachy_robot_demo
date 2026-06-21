@@ -43,10 +43,9 @@ from reachy_demo.listener import ContinuousListener
 from reachy_demo.audio import (
     MIC_RATE,
     boot_beeps, cleanup_orphan_capture, ensure_mic_working, error_chime,
-    pcm_to_wav_bytes, speaking_chime, startup_device_report,
-    start_thinking_ticks, thinking_cue,
+    voice_filter_pcm, pcm_to_wav_bytes, speaking_chime, startup_device_report,
 )
-from reachy_demo.cues import speak_cue, prewarm, set_translator
+from reachy_demo.cues import speak_cue, speak_thinking, prewarm, set_translator
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
 from reachy_demo.groq_client import (
     load_api_key, transcribe_lang_robust, language_directive,
@@ -641,9 +640,11 @@ def main():
                         continue
                     if ev["type"] == "end":
                         pcm = ev["pcm"]
-                        # Noise gate: reject ambient hum / clicks / non-voiced
+                        # Strip ~100Hz motor/electrical hum first, then run the
+                        # noise gate: reject ambient hum / clicks / non-voiced
                         # clips BEFORE Whisper, so it can't hallucinate words on
                         # them ("Thank you." on silence, etc.). Local, ~10ms.
+                        pcm = voice_filter_pcm(pcm)
                         speech_ok, sm = is_real_speech(pcm, gate_vad)
                         if not speech_ok:
                             log.event(f"  [gate] ignored noise — {sm['reject_reason']}")
@@ -654,31 +655,36 @@ def main():
                         # Speak "let me think..." cue — non-blocking chirp so STT
                         # starts immediately. The thinking-tick background loop
                         # (below) continues during LLM inference for cute beeps.
-                        if lang_known:
-                            thinking_cue()
-
-                        # Soft "processing" tick loop — keeps the robot feeling
-                        # alive while Whisper + LLM work. Killed the moment the
-                        # first TTS segment is about to play (or on error).
-                        # Fresh Event each turn: guarantees no cross-turn bleed
-                        # where old tick thread re-wakes after .clear() is called.
-                        stop_thinking = threading.Event()
-                        tick_thread = start_thinking_ticks(stop_thinking)
-
                         # Save the EXACT audio Whisper will hear (replayable WAV)
                         audio_path = log.save_audio(pcm)
 
+                        # Verbal "Hmm, let me think..." the instant the user stops,
+                        # spoken WHILE Whisper transcribes in a pool thread — so it's
+                        # an immediate, natural acknowledgement with ZERO added
+                        # latency (STT finishes underneath the ~1s filler). No beep
+                        # loop in the instant demo; the streamed reply lands right
+                        # after. stop_thinking/tick_thread kept as no-ops so the rest
+                        # of the loop and cleanup are unchanged.
+                        stop_thinking = threading.Event()
+                        tick_thread = None
                         try:
                             t0 = time.time()
-                            text, final_lang, stt_retried, stt_stats = \
-                                transcribe_lang_robust(client, pcm_to_wav_bytes(pcm))
+                            if lang_known:
+                                stt_future = action_pool.submit(
+                                    transcribe_lang_robust, client, pcm_to_wav_bytes(pcm))
+                                speak_thinking(listener, current_lang)
+                                text, final_lang, stt_retried, stt_stats = stt_future.result()
+                            else:
+                                # First turn: language unknown, so DON'T guess a
+                                # filler language — just transcribe.
+                                text, final_lang, stt_retried, stt_stats = \
+                                    transcribe_lang_robust(client, pcm_to_wav_bytes(pcm))
                             stt_dt = time.time() - t0
                             # The robust helper already applies the script override
                             # internally, so final_lang is post-override.
                             directive = language_directive(final_lang)
                         except Exception as e:
                             log.error("transcribe", e)
-                            stop_thinking.set()
                             error_chime()
                             anim.set_state(Animator.LISTENING)
                             continue

@@ -44,7 +44,7 @@ from reachy_demo.listener import ContinuousListener
 from reachy_demo.audio import (
     MIC_RATE, SPEAKER,
     boot_beeps, cleanup_orphan_capture, ensure_mic_working, error_chime,
-    pcm_to_wav_bytes, speaking_chime, startup_device_report,
+    voice_filter_pcm, pcm_to_wav_bytes, speaking_chime, startup_device_report,
     start_thinking_ticks, thinking_cue,
 )
 from reachy_demo.cues import speak_cue, prewarm, set_translator
@@ -663,8 +663,10 @@ def main():
                         continue
                     if ev["type"] == "end":
                         pcm = ev["pcm"]
-                        # Noise gate: drop ambient hum / clicks / non-voiced clips
-                        # before Whisper so it can't hallucinate words on them.
+                        # Strip ~100Hz motor/electrical hum, then drop ambient hum /
+                        # clicks / non-voiced clips before Whisper so it can't
+                        # hallucinate words on them.
+                        pcm = voice_filter_pcm(pcm)
                         speech_ok, sm = is_real_speech(pcm, gate_vad)
                         if not speech_ok:
                             log.event(f"  [gate] ignored noise — {sm['reject_reason']}")
