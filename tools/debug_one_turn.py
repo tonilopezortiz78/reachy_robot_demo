@@ -4,7 +4,7 @@ language pipeline (Whisper → resolve language → LLM), with no daemon/motors.
 
 This isolates the mic + STT + language-matching path — the part that was failing
 ("Japanese in, Spanish out") — from the robot control stack (which triggers a
-sandbox kill). Records to data/ like the real demo so the audio is replayable.
+sandbox kill). Records to logs/ like the real demo so the audio is replayable.
 
 Usage:  ./run.sh tools/debug_one_turn.py [seconds]
 """

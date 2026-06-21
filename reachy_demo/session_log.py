@@ -1,13 +1,14 @@
 """
 reachy_demo/session_log.py — full conversation + API recorder for debugging.
 
-Creates one sequentially-numbered folder per run under data/ and records
+Creates one sequentially-numbered folder per run under logs/ and records
 EVERYTHING needed to diagnose a bad interaction after the fact:
 
-  data/1/   data/2/   data/3/  ...   (auto-incremented each run)
-    console.log        — human-readable timeline of every event
-    transcript.jsonl   — one JSON object per turn (STT, language, LLM payload, reply, timings)
-    audio/turn_NNN.wav — the exact audio Whisper heard each turn (replayable)
+  logs/1/   logs/2/   logs/3/  ...   (auto-incremented each run)
+    console.log         — human-readable timeline of every event
+    transcript.jsonl    — one JSON object per turn (STT, language, LLM payload, reply, timings)
+    audio/turn_NNN.wav  — the exact audio Whisper heard each turn (replayable)
+    audio/reply_NNN_S.wav — each TTS sentence Reachy spoke back (replayable)
 
 Usage:
     log = SessionLogger(ROOT, "demo_tools7")
@@ -30,7 +31,7 @@ from pathlib import Path
 
 
 def _next_interaction_dir(data_root: Path) -> Path:
-    """Return data/<N>/ where N is the next free sequential integer (1, 2, 3...)."""
+    """Return logs/<N>/ where N is the next free sequential integer (1, 2, 3...)."""
     data_root.mkdir(parents=True, exist_ok=True)
     existing = [int(p.name) for p in data_root.iterdir()
                 if p.is_dir() and p.name.isdigit()]
@@ -52,7 +53,7 @@ def _prune_old_sessions(data_root: Path, keep: int = 3) -> None:
 class SessionLogger:
     def __init__(self, root, demo_name: str, keep_sessions: int = 3):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        data_root = Path(root) / "data"
+        data_root = Path(root) / "logs"
         self.dir = _next_interaction_dir(data_root)
         self.number = self.dir.name
         self.audio_dir = self.dir / "audio"

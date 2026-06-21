@@ -719,7 +719,7 @@ DANCE_FUNNIES = [
 
 def main():
     # Create the recorder FIRST so even a startup crash (daemon, robot connect,
-    # emotion library) is captured in data/<N>/console.log instead of vanishing.
+    # emotion library) is captured in logs/<N>/console.log instead of vanishing.
     log = SessionLogger(ROOT, "demo_tools7")
     log.event("Reachy NS Ambassador — LLM-driven gesture tools + barge-in")
 

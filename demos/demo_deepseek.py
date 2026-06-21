@@ -34,10 +34,11 @@ from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
 
 from reachy_demo.animator import Animator, NAMED_GESTURES
+import reachy_demo.audio as audio  # for live audio.MIC after redetect_mic()
 from reachy_demo.audio import (
     MIC, MIC_RATE, VAD_CHUNK, SPEAKER,
     assert_mic_ok, boot_beeps, cleanup_orphan_capture, error_chime,
-    pcm_to_wav_bytes, speaking_chime, start_thinking_ticks,
+    pcm_to_wav_bytes, redetect_mic, speaking_chime, start_thinking_ticks,
     startup_device_report, thinking_cue,
 )
 from reachy_demo.cues import speak_cue, prewarm, set_translator
@@ -251,9 +252,10 @@ class ContinuousListener:
     Identical to demo_tools7.py implementation.
     """
 
-    def __init__(self, vad_model, event_queue):
+    def __init__(self, vad_model, event_queue, log=None):
         self.vad_model = vad_model
         self.q = event_queue
+        self.log = log
         self._stop = threading.Event()
         self._muted = False
         self._threshold_mode = "normal"
@@ -286,14 +288,23 @@ class ContinuousListener:
     def _current_threshold(self) -> float:
         return THRESH_BARGE_IN if self._threshold_mode == "barge_in" else THRESH_NORMAL
 
-    def _loop(self):
-        arecord = subprocess.Popen(
+    def _open_capture(self):
+        """Open a fresh pacat capture on the live, re-detected robot mic so a
+        replug / PipeWire restart that changed the source name is picked up."""
+        device = audio.MIC
+        return subprocess.Popen(
             ["pacat", "--record", "--raw",
-             f"--device={MIC}",
+             f"--device={device}",
              f"--rate={MIC_RATE}", "--channels=1", "--format=s16le"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
+        ), device
+
+    def _loop(self):
+        arecord, device = self._open_capture()
+        if self.log:
+            self.log.event(f"  [listener] capturing on {device}")
         vad_iter = None
+        recover_attempts = 0
         try:
             while not self._stop.is_set():
                 if vad_iter is None:
@@ -310,12 +321,32 @@ class ContinuousListener:
 
                 raw = arecord.stdout.read(VAD_CHUNK * 2)
                 if not raw or len(raw) < VAD_CHUNK * 2:
-                    # Mic stream died — post an error so the main loop surfaces
-                    # it instead of hanging on events.get() forever.
-                    self.q.put({"type": "mic_error",
-                                "reason": (f"mic stream closed (got "
-                                           f"{len(raw) if raw else 0} bytes)")})
-                    break
+                    # Mic stream died (replug / PipeWire restart / suspend).
+                    # RE-DETECT the robot mic and reopen rather than giving up
+                    # forever; only surface a hard error after 5 failed reopens.
+                    if self.log:
+                        self.log.event(
+                            f"  [listener] stream closed (got "
+                            f"{len(raw) if raw else 0} bytes) — recovering...")
+                    try:
+                        arecord.terminate(); arecord.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                    recover_attempts += 1
+                    if recover_attempts > 5:
+                        self.q.put({"type": "mic_error",
+                                    "reason": "mic stream kept closing after 5 "
+                                              "reopen attempts — device lost"})
+                        break
+                    cleanup_orphan_capture()
+                    new_dev = redetect_mic()
+                    time.sleep(0.4)
+                    arecord, device = self._open_capture()
+                    if self.log and new_dev != device:
+                        self.log.event(f"  [listener] re-detected mic: {new_dev}")
+                    vad_iter = None
+                    continue
+                recover_attempts = 0
 
                 if self._muted:
                     vad_iter = None
@@ -447,7 +478,10 @@ class DialogEngine:
         # full LLM response before first audio starts.
         seg_q  = queue.Queue()   # (gesture, text, tts_future) | None sentinel
         _abort = threading.Event()
-        tts_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)  # 1 synths while 1 plays
+        # One worker per possible segment so every sentence synthesises in
+        # parallel as it lands — by the time sentence 1 finishes playing, the
+        # rest are ready and play with no gap. Playback stays serial.
+        tts_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_SEGMENTS)
         wavs: list[str] = []
 
         def _produce():
@@ -465,13 +499,19 @@ class DialogEngine:
                                 break
                             seg = self._extract_segment(s)
                             if seg:
+                                n += 1
+                                if self.log:
+                                    self.log.event(
+                                        f"  [synth {n}] creating wav (parallel): \"{seg[1]}\"")
                                 seg_q.put((seg[0], seg[1],
                                            tts_pool.submit(synth_to_file, seg[1])))
-                                n += 1
                         buf = parts[-1]
                 if not _abort.is_set() and n < self.MAX_SEGMENTS:
                     tail = self._extract_segment(buf)
                     if tail:
+                        if self.log:
+                            self.log.event(
+                                f"  [synth {n+1}] creating wav (parallel): \"{tail[1]}\"")
                         seg_q.put((tail[0], tail[1],
                                    tts_pool.submit(synth_to_file, tail[1])))
             finally:
@@ -534,6 +574,9 @@ class DialogEngine:
                     opening_played = True
 
                 self.anim.set_state(Animator.SPEAKING)
+                if self.log:
+                    self.log.event(f"  [play {len(played)+1}] ▶ \"{text}\"")
+                    self.log.save_reply_wav(wav, seg=len(played) + 1)
                 self._tts_proc = subprocess.Popen(
                     ["aplay", "-D", SPEAKER, "-q", wav],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -541,6 +584,8 @@ class DialogEngine:
                 while self._tts_proc.poll() is None:
                     if self._drain_barge_in(timeout=0.08):
                         _abort.set()
+                        if self.log:
+                            self.log.event(f"  [play {len(played)+1}] ✂ barge-in — stopped")
                         return None
 
                 played.append((gesture, text))
@@ -739,7 +784,7 @@ def main():
             anim = Animator(mini, moves_library=emotions)
 
             events = queue.Queue()
-            listener = ContinuousListener(vad_model, events)
+            listener = ContinuousListener(vad_model, events, log=log)
             history = []
             current_lang = "English"
             lang_known = False
@@ -797,6 +842,8 @@ def main():
                         continue
                     if ev["type"] == "end":
                         pcm = ev["pcm"]
+                        utt_s = len(pcm) / 2 / MIC_RATE
+                        log.event(f"  [heard] utterance {utt_s:.1f}s → transcribing")
                         anim.set_state(Animator.THINKING)
                         if lang_known:
                             # Quick non-blocking chirp — STT starts immediately
@@ -911,6 +958,7 @@ def main():
 
                         anim.set_state(Animator.LISTENING)
                         speak_cue(listener, "listening", current_lang)
+                        log.event("  [listening] waiting for next utterance\n")
 
             except KeyboardInterrupt:
                 log.event("\n  Stopping...")

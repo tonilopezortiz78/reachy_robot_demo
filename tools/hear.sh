@@ -3,8 +3,8 @@
 #
 # Usage:
 #   tools/hear.sh            # newest session
-#   tools/hear.sh 16         # data/16
-#   tools/hear.sh 16 3       # just turn_003 of data/16
+#   tools/hear.sh 16         # logs/16
+#   tools/hear.sh 16 3       # just turn_003 of logs/16
 #
 # Plays through the robot speaker (plughw:CARD=Audio). Add HEADPHONES=1 to use
 # the system default output instead (handy when the robot is unplugged):
@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [[ -n "${1:-}" ]]; then SESS="data/$1"; else SESS="$(ls -dt data/*/ | head -1)"; fi
+if [[ -n "${1:-}" ]]; then SESS="logs/$1"; else SESS="$(ls -dt logs/*/ | head -1)"; fi
 SESS="${SESS%/}"
 [[ -d "$SESS/audio" ]] || { echo "No audio in $SESS"; exit 1; }
 

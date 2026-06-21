@@ -11,7 +11,7 @@ debugging "it misheard me" or "the reply audio was wrong."
 
 Usage:
     ./run.sh tools/replay_session.py            # replay the most recent session
-    ./run.sh tools/replay_session.py 68         # replay session data/68
+    ./run.sh tools/replay_session.py 68         # replay session logs/68
     ./run.sh tools/replay_session.py --list     # list available sessions
 
 The visitor's mic audio is played through the robot speaker too (slightly
@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-DATA = ROOT / "data"
+DATA = ROOT / "logs"
 SPEAKER = "plughw:CARD=Audio,DEV=0"
 
 
@@ -52,7 +52,7 @@ def main():
     if "--list" in args:
         s = sessions()
         if not s:
-            print("No sessions recorded in data/")
+            print("No sessions recorded in logs/")
             return
         print("Available sessions:")
         for n in s:
@@ -66,7 +66,7 @@ def main():
     else:
         s = sessions()
         if not s:
-            print("No sessions recorded in data/")
+            print("No sessions recorded in logs/")
             return
         num = s[-1]
 
