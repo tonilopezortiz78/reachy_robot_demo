@@ -497,10 +497,10 @@ class DialogEngine:
                         seg = self._extract_segment(s)
                         if seg is not None:
                             segments.append(seg)
+                            # Submit first segment's TTS during streaming;
+                            # the playback loop below submits subsequent segments
+                            # one-ahead (synth N+1 while playing N).
                             if next_future is None:
-                                next_future = tts_pool.submit(synth_to_file, seg[1])
-                            elif len(segments) == 2:
-                                # Pre-synth segment 2 while segment 1 plays
                                 next_future = tts_pool.submit(synth_to_file, seg[1])
                     buffer = parts[-1]
                     if len(segments) >= self.MAX_SEGMENTS:

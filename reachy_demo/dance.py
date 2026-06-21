@@ -241,8 +241,8 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None,
         music_proc.wait()
         music_proc = None
 
-        # ── 3 more seconds of silent dancing ─────────────────────────
-        silent_end = time.time() + 3.0
+        # ── 1.5 more seconds of silent dancing ────────────────────────
+        silent_end = time.time() + 1.5
         i = beat_count % len(_MACARENA_POSES)
         while time.time() < silent_end:
             _beat(mini, _MACARENA_POSES[i % len(_MACARENA_POSES)], 1.6,
