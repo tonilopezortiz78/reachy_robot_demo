@@ -302,6 +302,25 @@ DANCE_PICKS = [
     "chin_lead",
 ]
 
+# ── Sound effects ─────────────────────────────────────────────────────────────
+
+def _chirp(f0, f1, dur, vol=0.65):
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi",
+         "-i", f"aevalsrc=sin(2*PI*({f0}*t+({f1}-{f0})*t*t/(2*{dur})))*{vol}:c=mono:s=22050",
+         "-t", str(dur), "-f", "alsa", SPEAKER],
+        check=False,
+    )
+
+
+def _excited_chirp():
+    """Two ascending sweeps — used before/during dance to signal excitement."""
+    _chirp(500, 1800, 0.14, vol=0.75)
+    time.sleep(0.04)
+    _chirp(800, 2200, 0.12, vol=0.85)
+
+
 # ── Macarena beat-sync dance (ported from demo_dance.py) ─────────────────────
 
 MUSIC_PATH = ROOT / "music" / "macarena.mp3"
@@ -384,12 +403,20 @@ def do_macarena(mini, dances, emotions, anim, log=None):
     Full beat-synced Macarena — exact port of demo_dance.py.
     3 escalating cycles (scale 1.0→1.3→1.6) + jump transitions + climax.
     Music: macarena.mp3 at +6 dB. Pauses the Animator for sole servo control.
+
+    _excited_chirp() before music is load-bearing: it clears the ALSA device
+    after the TTS aplay finishes, giving the OS time to fully release it so
+    the music ffmpeg can open it without "Device or resource busy".
     """
     import math as _math
     if log:
         log.event("  [dance] Macarena starting!")
     anim.pause()
+    music_proc = None
     try:
+        # Chirp first — clears ALSA from previous aplay AND signals excitement
+        _excited_chirp()
+
         music_proc = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
              "-stream_loop", "-1", "-i", str(MUSIC_PATH),
@@ -423,17 +450,20 @@ def do_macarena(mini, dances, emotions, anim, log=None):
                 _mac_jump(mini)
 
         # Climax — mirrors demo_dance.py exactly
+        _excited_chirp()
         _mac_spin360(mini)
         mini.play_move(dances.get("dizzy_spin"),       play_frequency=80.0, sound=False)
         _mac_spin360(mini)
         mini.play_move(dances.get("polyrhythm_combo"), play_frequency=80.0, sound=False)
+        _excited_chirp()
         _mac_spin360(mini)
         mini.play_move(emotions.get("enthusiastic2"),  play_frequency=80.0, sound=False)
         mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
 
     finally:
-        music_proc.terminate()
-        music_proc.wait()
+        if music_proc is not None:
+            music_proc.terminate()
+            music_proc.wait()
         mini.goto_target(
             head=create_head_pose(), antennas=[0.0, 0.0],
             body_yaw=0.0, duration=0.8,
@@ -1038,22 +1068,9 @@ def main():
                             continue
                         stop_thinking.set()
 
-                        # Perform the actual dance after speaking
+                        # ANY dance request → full Macarena show with music
                         if is_dance and reply is not None:
-                            import random as _random
-                            if "macarena" in text.lower():
-                                do_macarena(mini, dances, emotions, anim, log)
-                            else:
-                                pick = _random.choice(DANCE_PICKS)
-                                log.event(f"  [dance] playing: {pick}")
-                                try:
-                                    anim.pause()
-                                    mini.play_move(dances.get(pick),
-                                                   play_frequency=80.0, sound=False)
-                                except Exception as e:
-                                    log.event(f"  [dance] error: {e}")
-                                finally:
-                                    anim.resume()
+                            do_macarena(mini, dances, emotions, anim, log)
                             anim.set_state(Animator.LISTENING)
 
                         total_dt = time.time() - t0
