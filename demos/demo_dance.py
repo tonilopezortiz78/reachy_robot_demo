@@ -376,6 +376,7 @@ def main():
                 mini.play_move(em.get("success1"),             play_frequency=80.0, sound=False)
 
             finally:
+                time.sleep(5)  # 5 more seconds of music before stopping
                 beat_proc.terminate()
                 beat_proc.wait()
 

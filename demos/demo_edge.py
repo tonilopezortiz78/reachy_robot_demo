@@ -25,8 +25,8 @@ from reachy_mini import ReachyMini
 
 from reachy_demo.animator import Animator
 from reachy_demo.audio import (
-    boot_beeps, blip, chirp, error_chime, pcm_to_wav_bytes, record_utterance,
-    speaking_chime,
+    assert_mic_ok, boot_beeps, blip, chirp, cleanup_orphan_capture, error_chime,
+    pcm_to_wav_bytes, record_utterance, speaking_chime, startup_device_report,
 )
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
 from reachy_demo.groq_client import load_api_key, transcribe_lang, language_directive
@@ -232,6 +232,15 @@ def main():
     vad_model = load_silero_vad()           # ~2 s — overlaps with daemon startup
     client    = Groq(api_key=GROQ_KEY)
     wait_for_daemon(daemon_proc)            # wait for remainder (usually already up)
+    # Kill leftover mic-capture processes from a crashed previous run (the #1
+    # cause of "robot doesn't listen") and hard-gate on a working mic.
+    orphans = cleanup_orphan_capture()
+    if orphans:
+        print(f"  Killed {orphans} orphan mic-capture process(es).")
+    for line in startup_device_report():
+        print(line)
+    mic_info = assert_mic_ok()   # raises RuntimeError if mic is truly dead
+    print(f"  MIC check: RMS={mic_info['rms']:.0f} — OK")
 
     try:
         with ReachyMini(connection_mode="localhost_only",
@@ -262,7 +271,14 @@ def main():
             try:
                 while True:
                     anim.set_state(Animator.LISTENING)
-                    pcm = record_utterance(vad_model, ping=listening_ping)
+                    try:
+                        pcm = record_utterance(vad_model, ping=listening_ping)
+                    except RuntimeError as e:
+                        # Mic stream died (USB drop / orphan grab). Surface it
+                        # and end cleanly instead of crashing with a raw traceback.
+                        print(f"\n  MICROPHONE ERROR: {e}")
+                        print("  Restart the demo after fixing the mic.")
+                        break
 
                     if pcm is None:
                         anim.set_state(Animator.IDLE)

@@ -128,6 +128,115 @@ def startup_device_report() -> list[str]:
     return lines
 
 
+# ── Orphan-capture cleanup & mic health gate ──────────────────────────────────
+# The #1 cause of "the robot doesn't listen" is a leftover `pacat --record` /
+# `parecord` / `arecord` process from a crashed or kill -9'd previous run. It
+# holds the robot's mic open, so the next demo's pacat gets 0 bytes of audio
+# and the VAD never fires — the robot silently never hears anyone. This is the
+# mic-side equivalent of the orphan reachy-mini-daemon that daemon.py already
+# cleans up. Call cleanup_orphan_capture() at startup, before opening the mic.
+
+def cleanup_orphan_capture() -> int:
+    """Kill leftover mic-capture processes from crashed demo runs.
+    Safe: only kills *capture* processes (`pacat --record`, `parecord`,
+    `arecord`), never playback (aplay/paplay/pacat-without---record), and
+    never this process itself. Returns the number of processes killed.
+    """
+    import os
+    import signal
+    me = os.getpid()
+    killed = 0
+    for pat in ("pacat --record", "parecord", "arecord"):
+        try:
+            out = subprocess.run(
+                ["pgrep", "-f", pat], capture_output=True, text=True, timeout=3,
+            ).stdout
+        except Exception:
+            continue
+        for line in out.split():
+            try:
+                pid = int(line)
+            except ValueError:
+                continue
+            if pid == me:
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed += 1
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                pass
+    if killed:
+        time.sleep(0.3)  # let PipeWire release the device
+    return killed
+
+
+def verify_mic(duration_s: float = 0.5) -> dict:
+    """Open the robot mic, capture `duration_s` seconds, report signal health.
+    Returns {ok, rms, bytes, reason}. `ok` is True only when the mic delivered
+    full audio with RMS >= 5 (real signal — not necessarily speech, but not
+    dead-silent). A short/0-byte read means the device is held by another
+    process or unplugged. Does NOT clean orphans itself — call
+    cleanup_orphan_capture() first if you want that.
+    """
+    n_samples = int(MIC_RATE * duration_s)
+    n_bytes = n_samples * 2
+    try:
+        proc = subprocess.Popen(
+            ["pacat", "--record", "--raw", f"--device={MIC}",
+             f"--rate={MIC_RATE}", "--channels=1", "--format=s16le"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        try:
+            raw = proc.stdout.read(n_bytes)
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+    except Exception as e:
+        return {"ok": False, "rms": 0.0, "bytes": 0, "reason": f"capture error: {e}"}
+
+    if len(raw) < n_bytes:
+        return {"ok": False, "rms": 0.0, "bytes": len(raw),
+                "reason": (f"mic delivered {len(raw)}/{n_bytes} bytes — device is "
+                           "busy or unplugged. Run cleanup_orphan_capture() or "
+                           "replug the USB cable, then restart.")}
+    arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+    rms = float(np.sqrt(np.mean(arr ** 2)))
+    if rms < 5:
+        return {"ok": False, "rms": rms, "bytes": len(raw),
+                "reason": (f"mic is silent (RMS {rms:.0f}) — no signal. Check the "
+                           "USB cable, robot power, and the back switch (Robot mode).")}
+    return {"ok": True, "rms": rms, "bytes": len(raw), "reason": "ok"}
+
+
+def assert_mic_ok() -> dict:
+    """Hard gate for talking demos: clean orphans, verify the mic, retry once
+    on failure, then RAISE RuntimeError if the mic is truly dead (0 bytes /
+    capture error). Low RMS (quiet room, no one speaking) does NOT raise —
+    only a genuinely inaccessible mic does. Returns the final verify dict so
+    the caller can log the RMS. Call this at startup, before listener.start().
+    """
+    cleanup_orphan_capture()
+    info = verify_mic()
+    if info["ok"]:
+        return info
+    # First attempt failed — try one more cleanup + verify in case a stubborn
+    # orphan needed a moment to release the device.
+    cleanup_orphan_capture()
+    info = verify_mic()
+    if info["ok"]:
+        return info
+    raise RuntimeError(
+        f"Robot microphone is not producing audio: {info['reason']}\n"
+        "The demo cannot listen without a working mic. Fix the issue above and "
+        "restart. Diagnostic: ./run.sh tools/test_mic.py")
+
+
 # ── VAD constants ─────────────────────────────────────────────────────────────
 
 MIC_RATE       = 16000
@@ -145,9 +254,9 @@ def _beep(expr, dur, vol=0.5, block=True):
            "-f", "lavfi", "-i", f"aevalsrc={expr}*{vol}:c=mono:s=22050",
            "-t", str(dur), "-f", "alsa", SPEAKER]
     if block:
-        subprocess.run(cmd, check=False)
+        subprocess.run(cmd, check=False, stderr=subprocess.DEVNULL)
     else:
-        subprocess.Popen(cmd)
+        subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
 
 
 def blip(freq, dur=0.07, vol=0.4, block=True):
@@ -219,17 +328,17 @@ def start_thinking_ticks(stop_event: threading.Event) -> threading.Thread:
         rng = random.Random()
 
         def _rising_scan():
-            chirp_nb(280, rng.randint(1000, 1300), 0.52, 0.21)
+            chirp_nb(280, rng.randint(1000, 1300), 0.52, 0.35)
             _wait(0.57)
 
         def _falling_scan():
-            chirp_nb(rng.randint(1100, 1400), 300, 0.44, 0.18)
+            chirp_nb(rng.randint(1100, 1400), 300, 0.44, 0.30)
             _wait(0.49)
 
         def _double_sweep():
-            chirp_nb(420, 1050, 0.22, 0.19)
+            chirp_nb(420, 1050, 0.22, 0.32)
             if not _wait(0.27): return
-            chirp_nb(1050, 420, 0.20, 0.15)
+            chirp_nb(1050, 420, 0.20, 0.25)
             _wait(0.24)
 
         def _data_burst():
@@ -238,7 +347,7 @@ def start_thinking_ticks(stop_event: threading.Event) -> threading.Thread:
             freqs = [base, int(base * 1.3), base, int(base * 0.8)][:rng.randint(3, 4)]
             for f in freqs:
                 if stop_event.is_set(): return
-                blip(f, 0.034, 0.15, block=True)
+                blip(f, 0.034, 0.25, block=True)
                 if not _wait(0.026): return
 
         def _scale_run():
@@ -248,7 +357,7 @@ def start_thinking_ticks(stop_event: threading.Event) -> threading.Thread:
                 steps = list(reversed(steps))
             for f in steps:
                 if stop_event.is_set(): return
-                blip(f, 0.036, 0.14, block=True)
+                blip(f, 0.036, 0.24, block=True)
                 if not _wait(0.022): return
 
         def _wobble_pulse():
@@ -256,7 +365,7 @@ def start_thinking_ticks(stop_event: threading.Event) -> threading.Thread:
             freq = rng.choice([480, 580, 700, 840])
             rate = rng.choice([6, 8, 10])
             expr = f"sin(2*PI*{freq}*t)*(0.55+0.45*sin(2*PI*{rate}*t))"
-            _beep(expr, 0.50, vol=0.18, block=False)
+            _beep(expr, 0.50, vol=0.30, block=False)
             _wait(0.55)
 
         def _stutter_burst():
@@ -265,16 +374,16 @@ def start_thinking_ticks(stop_event: threading.Event) -> threading.Thread:
             count = rng.randint(4, 8)
             for _ in range(count):
                 if stop_event.is_set(): return
-                blip(freq, 0.020, 0.12, block=True)
+                blip(freq, 0.020, 0.20, block=True)
                 if not _wait(0.015): return
                 freq = int(freq * rng.uniform(0.88, 1.14))
 
         def _ping_echo():
             # bright ping then a softer echo a beat later
             f = rng.randint(900, 1400)
-            blip(f, 0.05, 0.22, block=True)
+            blip(f, 0.05, 0.35, block=True)
             if not _wait(0.18): return
-            blip(int(f * 0.75), 0.06, 0.10, block=True)
+            blip(int(f * 0.75), 0.06, 0.18, block=True)
 
         def _fm_warble():
             # frequency-modulated tone — eerie wobbling sweep
@@ -282,7 +391,7 @@ def start_thinking_ticks(stop_event: threading.Event) -> threading.Thread:
             depth = rng.randint(80, 180)
             rate = rng.randint(4, 9)
             expr = f"sin(2*PI*({fc}+{depth}*sin(2*PI*{rate}*t))*t)"
-            _beep(expr, 0.48, vol=0.17, block=False)
+            _beep(expr, 0.48, vol=0.28, block=False)
             _wait(0.52)
 
         phrases = [
@@ -295,9 +404,13 @@ def start_thinking_ticks(stop_event: threading.Event) -> threading.Thread:
         while not stop_event.is_set():
             rng.choices(phrases, weights=weights, k=1)[0]()
             if stop_event.is_set():
-                return
+                break
             if not _wait(rng.uniform(0.55, 1.20)):
-                return
+                break
+        # Kill any in-flight ffmpeg tones — non-blocking chirps/beeps may still
+        # be playing their full duration (~100-500ms) after the loop exits.
+        # Killing them frees the speaker immediately so TTS starts cleanly.
+        subprocess.run(["pkill", "-9", "-f", "aevalsrc"], check=False)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
@@ -333,7 +446,7 @@ def ready_cue():
 
 def thinking_cue():
     """'Let me think...' Gentle descending sweep. NON-blocking so STT starts instantly."""
-    chirp(820, 430, 0.32, vol=0.34, block=False)
+    chirp(820, 430, 0.32, vol=0.50, block=False)
 
 # ── WAV playback ──────────────────────────────────────────────────────────────
 
@@ -387,7 +500,16 @@ def record_utterance(vad_model, ping=None) -> bytes | None:
         while total < max_frames:
             raw = arecord.stdout.read(VAD_CHUNK * 2)
             if not raw or len(raw) < VAD_CHUNK * 2:
-                break
+                # Mic stream died (0 bytes) — device lost or grabbed by another
+                # process. Surface it instead of silently returning None, which
+                # would make the demo loop forever showing "Listening..." with
+                # no response. The caller's finally still runs goto_sleep().
+                raise RuntimeError(
+                    f"Microphone stream closed unexpectedly "
+                    f"(got {len(raw) if raw else 0} bytes). The mic device may "
+                    "have been unplugged or grabbed by another process. "
+                    "Run cleanup_orphan_capture() and replug USB, then restart."
+                )
 
             audio_f32 = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
             result = vad_iter(torch.from_numpy(audio_f32))

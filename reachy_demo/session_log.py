@@ -70,7 +70,7 @@ class SessionLogger:
         stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{stamp}] {msg}"
         if echo:
-            print(msg, flush=True)
+            print(line, flush=True)
         with open(self.console_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 

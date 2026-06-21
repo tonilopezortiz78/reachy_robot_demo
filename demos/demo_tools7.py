@@ -23,6 +23,7 @@ Press Ctrl-C to stop.
 
 import concurrent.futures
 import queue
+import random
 import re
 import subprocess
 import sys
@@ -43,8 +44,9 @@ from reachy_demo.dance import DANCE_KEYWORDS, do_macarena, excited_chirp
 from reachy_demo.search import web_search
 from reachy_demo.audio import (
     MIC, MIC_RATE, VAD_CHUNK, SPEAKER,
-    boot_beeps, error_chime, pcm_to_wav_bytes,
-    speaking_chime, start_thinking_ticks,
+    assert_mic_ok, boot_beeps, cleanup_orphan_capture, error_chime,
+    pcm_to_wav_bytes, speaking_chime, startup_device_report,
+    start_thinking_ticks, thinking_cue,
 )
 from reachy_demo.cues import speak_cue, prewarm, set_translator
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
@@ -290,6 +292,12 @@ class ContinuousListener:
 
                 raw = arecord.stdout.read(VAD_CHUNK * 2)
                 if not raw or len(raw) < VAD_CHUNK * 2:
+                    # Mic stream died — device lost or grabbed by another
+                    # process. Post an error event so the main loop can surface
+                    # it instead of hanging silently on events.get() forever.
+                    self.q.put({"type": "mic_error",
+                                "reason": (f"mic stream closed (got "
+                                           f"{len(raw) if raw else 0} bytes)")})
                     break
 
                 if self._muted:
@@ -376,7 +384,8 @@ class DialogEngine:
             print(f"  [memory] {e}", flush=True)
 
     def speak(self, user_text: str, lang_directive: str | None = None,
-              search_future: concurrent.futures.Future | None = None) -> str | None:
+              search_future: concurrent.futures.Future | None = None,
+              stop_ticks: threading.Event | None = None) -> str | None:
         """
         Fire two parallel Groq calls the moment STT completes:
           A) pick_action() — non-streaming, returns gesture in ~150ms
@@ -404,19 +413,22 @@ class DialogEngine:
             messages.append({"role": "system", "content": self.memory_text})
         messages += self.history
 
-        # Inject live search results if available (submitted in parallel with STT)
-        if search_future is not None:
+        # Inject live search results if available (submitted in parallel with STT).
+        # Non-blocking: if the search hasn't finished yet, start the LLM without
+        # it — a slow search shouldn't delay every reply.
+        snippet = None
+        if search_future is not None and search_future.done():
             try:
-                snippet = search_future.result(timeout=2.5)
-                if snippet:
-                    messages.append({
-                        "role": "system",
-                        "content": f"[Live web search result — use this data in your reply]:\n{snippet}",
-                    })
-                    if self.log:
-                        self.log.event(f"  [search] injected {len(snippet)} chars")
+                snippet = search_future.result(timeout=0)
             except Exception:
                 pass
+        if snippet:
+            messages.append({
+                "role": "system",
+                "content": f"[Live web search result — use this data in your reply]:\n{snippet}",
+            })
+            if self.log:
+                self.log.event(f"  [search] injected {len(snippet)} chars")
 
         if lang_directive:
             messages = messages + [{"role": "system", "content": lang_directive}]
@@ -529,6 +541,11 @@ class DialogEngine:
                 if i + 1 < len(segments):
                     next_future = tts_pool.submit(synth_to_file, segments[i + 1][1])
 
+                # On the first segment, stop thinking ticks so any in-flight
+                # ffmpeg tone releases the ALSA device before aplay starts.
+                if i == 0 and stop_ticks is not None:
+                    stop_ticks.set()
+
                 # Skip inline gesture markers if the AI picker already fired one
                 # this turn — stacking two big movements at once looks violent.
                 if gesture and not opening_played:
@@ -561,7 +578,7 @@ class DialogEngine:
             self._is_speaking = False
             self.listener.set_threshold_mode("normal")
 
-    def speak_greeting(self, text: str):
+    def speak_greeting(self, text: str, stop_ticks: threading.Event | None = None):
         """Opening line with barge-in enabled."""
         self._is_speaking = True
         self.listener.set_threshold_mode("barge_in")
@@ -632,6 +649,29 @@ class DialogEngine:
                 self._tts_proc.wait()
 
 
+# ── Startup greetings ─────────────────────────────────────────────────────────
+
+GREETINGS = [
+    "Hi! I'm Reachy, the Network School robot! Ask me anything.",
+    "Hello! Reachy here! I'm from Network School — what's on your mind?",
+    "Hey there! I'm Reachy, your friendly NS robot ambassador! Talk to me!",
+    "Hi! Reachy reporting for duty at Network School! Ask me about NS, Bitcoin, or anything!",
+    "Hello! I'm Reachy from Network School! I love meeting new people — what should we talk about?",
+    "Hey! Reachy here, the Network School robot! I'm excited to chat with you today!",
+    "Hi there! I'm Reachy, the little NS robot with big dreams! What brings you here?",
+    "Hello! Reachy at your service! I know all about Network School, AI, and robots!",
+]
+
+DANCE_FUNNIES = [
+    "Hey, who stopped the music? I was dancing!",
+    "Whoa, where'd the music go? I had more moves!",
+    "Hey, I wasn't done yet! That was my jam!",
+    "Oh, did the song end? I could've kept going all night!",
+    "Hey, bring back the beat! I was just getting started!",
+    "Wait, wait — who cut the music? I was in the zone!",
+]
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -649,6 +689,17 @@ def main():
         client = Groq(api_key=GROQ_KEY)
         log.event("  Waiting for daemon...")
         wait_for_daemon(daemon_proc)
+        # Kill any leftover mic-capture processes from a crashed previous run
+        # (the #1 cause of "robot doesn't listen") and hard-gate on a working
+        # mic before we go any further.
+        orphans = cleanup_orphan_capture()
+        if orphans:
+            log.event(f"  Killed {orphans} orphan mic-capture process(es).")
+        log.event("  Audio devices:")
+        for line in startup_device_report():
+            log.event(line)
+        mic_info = assert_mic_ok()   # raises RuntimeError if mic is truly dead
+        log.event(f"  MIC check: RMS={mic_info['rms']:.0f} — OK")
     except Exception as e:
         log.error("startup (daemon/VAD)", e)
         import traceback; log.event(traceback.format_exc(), echo=True)
@@ -697,7 +748,7 @@ def main():
             time.sleep(0.15)
             speaking_chime()
             engine.speak_greeting(
-                "Hi! I'm Reachy, the NS robot! Ask me anything."
+                random.choice(GREETINGS)
             )
 
             anim.set_state(Animator.LISTENING)
@@ -729,20 +780,23 @@ def main():
 
                 while True:
                     ev = events.get()
+                    if ev["type"] == "mic_error":
+                        # Background listener lost the mic (USB drop / orphan
+                        # grab). Surface it and end cleanly — auto-restarting the
+                        # listener mid-run is fragile; a clean restart is safer.
+                        log.error("microphone", RuntimeError(ev["reason"]))
+                        log.event("  Restart the demo after fixing the mic.")
+                        break
                     if ev["type"] == "start":
                         continue
                     if ev["type"] == "end":
                         pcm = ev["pcm"]
                         anim.set_state(Animator.THINKING)
-                        # Speak "let me think..." in the last-known language (cached).
-                        # Muted + blocking so it can't self-trigger or collide with
-                        # the reply audio. Usually the user keeps the same language.
-                        # SKIP on the very first turn: we don't know the visitor's
-                        # language yet, so an English cue here would be the robot's
-                        # first words to (say) a Japanese speaker — jarring. The
-                        # thinking-tick sound below covers the gap instead.
+                        # Speak "let me think..." cue — non-blocking chirp so STT
+                        # starts immediately. The thinking-tick background loop
+                        # (below) continues during LLM inference for cute beeps.
                         if lang_known:
-                            speak_cue(listener, "thinking", current_lang)
+                            thinking_cue()
 
                         # Soft "processing" tick loop — keeps the robot feeling
                         # alive while Whisper + LLM work. Killed the moment the
@@ -820,13 +874,14 @@ def main():
                         # Fire web search in parallel — runs while thinking ticks play
                         search_future = action_pool.submit(web_search, text)
 
-                        # Stop thinking ticks BEFORE speak() so any ffmpeg
-                        # holding the alsa device is gone before first aplay.
-                        stop_thinking.set()
+                        # Stop thinking ticks BEFORE speak() so any in-flight ffmpeg
+                        # tone releases the alsa device — speak() itself stops them
+                        # right before the first aplay, so ticks play during LLM too.
                         t0 = time.time()
                         try:
                             reply = engine.speak(text, lang_directive=directive,
-                                                 search_future=search_future)
+                                                 search_future=search_future,
+                                                 stop_ticks=stop_thinking)
                         except Exception as e:
                             log.error("llm/tts", e)
                             error_chime()
@@ -850,7 +905,8 @@ def main():
                             # queue with false events that look like speech.
                             listener.mute()
                             try:
-                                do_macarena(mini, dances, emotions, anim, log)
+                                do_macarena(mini, dances, emotions, anim, log,
+                                            funny_text=random.choice(DANCE_FUNNIES))
                             finally:
                                 listener.unmute()
                                 # Drain any stale events accumulated during music

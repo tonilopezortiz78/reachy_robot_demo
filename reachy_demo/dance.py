@@ -3,9 +3,10 @@ reachy_demo/dance.py — Macarena beat-sync dance + sound effects.
 
 Public API:
   DANCE_KEYWORDS  — set of trigger words in 10+ languages
-  do_macarena(mini, dances, emotions, anim, log=None)
+  do_macarena(mini, dances, emotions, anim, log=None, funny_text=None)
       Full ~20 s beat-synced Macarena show with music, jump transitions,
-      and climax. Pauses the Animator for sole servo control.
+      and climax. Music stops → confused moves → speaks `funny_text` →
+      returns to neutral. Pauses the Animator for sole servo control.
   excited_chirp()
       Two ascending frequency sweeps — used before/during dance to signal
       excitement AND to clear the ALSA device after TTS aplay exits.
@@ -19,6 +20,7 @@ import time
 from pathlib import Path
 
 from reachy_demo.audio import SPEAKER
+from reachy_demo.tts_edge import synth_to_file
 
 ROOT = Path(__file__).parent.parent
 
@@ -45,7 +47,7 @@ def _chirp(f0, f1, dur, vol=0.65):
          "-f", "lavfi",
          "-i", f"aevalsrc=sin(2*PI*({f0}*t+({f1}-{f0})*t*t/(2*{dur})))*{vol}:c=mono:s=22050",
          "-t", str(dur), "-f", "alsa", SPEAKER],
-        check=False,
+        check=False, stderr=subprocess.DEVNULL,
     )
 
 
@@ -110,20 +112,25 @@ def _beat(mini, pose, scale, target_t):
 
 
 def _spin(mini, angle, dur=0.42):
-    mini.goto_target(head=create_head_pose(), antennas=[0.0, 0.0],
-                     body_yaw=angle, duration=dur)
+    """Spin body with head looking in the spin direction."""
+    mini.goto_target(
+        head=create_head_pose(yaw=_clamp(angle * 0.25, 1.50), degrees=False),
+        antennas=[0.0, 0.0],
+        body_yaw=angle, duration=dur,
+    )
     time.sleep(dur + 0.05)
 
 
 def _spin360(mini):
-    """360° illusion: blast to ±160°, snap across the gap, return to 0."""
-    mini.goto_target(head=create_head_pose(pitch=0.10, degrees=False),
+    """360° illusion: blast to ±160°, snap across the gap, return to 0.
+    Head tracks each spin direction for extra flair."""
+    mini.goto_target(head=create_head_pose(pitch=0.10, yaw=0.50, degrees=False),
                      antennas=[0.80, -0.80], body_yaw=2.79, duration=0.22)
     time.sleep(0.02)
-    mini.goto_target(head=create_head_pose(pitch=0.10, degrees=False),
+    mini.goto_target(head=create_head_pose(pitch=0.10, yaw=-0.50, degrees=False),
                      antennas=[-0.80, 0.80], body_yaw=-2.79, duration=0.18)
     time.sleep(0.02)
-    mini.goto_target(head=create_head_pose(pitch=0.25, degrees=False),
+    mini.goto_target(head=create_head_pose(pitch=0.25, yaw=0.0, degrees=False),
                      antennas=[0.80, 0.80], body_yaw=0.0, duration=0.28)
     time.sleep(0.10)
 
@@ -140,19 +147,20 @@ def _jump(mini):
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def do_macarena(mini, dances, emotions, anim, log=None):
+def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
     """
-    Full beat-synced Macarena show (~20 s):
-      excited_chirp → music starts → entry spins → 3 escalating cycles
-      (scale 1.0→1.3→1.6) + jump transitions → climax (3× spin360 +
-      dizzy_spin + polyrhythm_combo + enthusiastic2 + success1).
+    Full beat-synced Macarena show (~20 s + 5 s music tail):
+      excited_chirp → music starts → entry spins (double-speed, head tracking)
+      → 3 escalating cycles (scale 1.0→1.3→1.6) + jump transitions
+      → climax (3× spin360 + dizzy_spin + polyrhythm_combo + enthusiastic2
+      + success1) → 5 s more music (beat keeps playing) → music stops
+      → robot looks confused → speaks `funny_text`
 
     Pauses the Animator for the full duration so beat-sync goto_target calls
     have sole servo control. Resumes in finally so it's always restored.
 
-    excited_chirp() before music is load-bearing: it clears the ALSA device
-    after TTS aplay exits so the music ffmpeg can open it without
-    "Device or resource busy".
+    `funny_text` is spoken via edge-tts (synth_to_file) right after the
+    confused moves, with a tiny head-bob during playback. Requires internet.
     """
     if log:
         log.event("  [dance] Macarena starting!")
@@ -168,10 +176,10 @@ def do_macarena(mini, dances, emotions, anim, log=None):
         )
         music_t0 = time.time()
 
-        # Entry spins
-        _spin(mini,  1.4, dur=0.35)
-        _spin(mini, -1.4, dur=0.35)
-        _spin(mini,  0.0, dur=0.28)
+        # Entry spins — double speed with head tracking
+        _spin(mini,  1.4, dur=0.17)
+        _spin(mini, -1.4, dur=0.17)
+        _spin(mini,  0.0, dur=0.14)
 
         # Snap to next clean beat boundary
         elapsed  = time.time() - music_t0
@@ -203,10 +211,47 @@ def do_macarena(mini, dances, emotions, anim, log=None):
         mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
 
     finally:
+        # ── Let the groove play 5 more seconds before cutting ────────
         if music_proc is not None:
+            time.sleep(5)
             music_proc.terminate()
-            music_proc.wait()
+            try:
+                music_proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                music_proc.kill()
+                music_proc.wait()
+
+        # ── Confused — "where'd the music go?" (fast double-take) ───
+        mini.goto_target(head=create_head_pose(pitch=-0.10, roll=0.15, degrees=False),
+                         antennas=[-0.30, 0.50], body_yaw=0.30, duration=0.35)
+        time.sleep(0.40)
+        mini.goto_target(head=create_head_pose(pitch=-0.10, roll=-0.15, degrees=False),
+                         antennas=[0.50, -0.30], body_yaw=-0.30, duration=0.35)
+        time.sleep(0.40)
+
+        # ── Speak the funny line while holding a slight bob ─────────
+        if funny_text:
+            wav = synth_to_file(funny_text)
+            if wav:
+                play_proc = subprocess.Popen(
+                    ["aplay", "-D", SPEAKER, "-q", wav],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                # Small head-bob during TTS playback
+                while play_proc.poll() is None:
+                    mini.goto_target(
+                        head=create_head_pose(pitch=0.05, yaw=0.10, degrees=False),
+                        antennas=[0.20, 0.20], body_yaw=0.0, duration=0.25)
+                    time.sleep(0.30)
+                    mini.goto_target(
+                        head=create_head_pose(pitch=0.05, yaw=-0.10, degrees=False),
+                        antennas=[0.20, 0.20], body_yaw=0.0, duration=0.25)
+                    time.sleep(0.30)
+                play_proc.wait()
+                Path(wav).unlink(missing_ok=True)
+
+        # ── Return to neutral ───────────────────────────────────────
         mini.goto_target(head=create_head_pose(), antennas=[0.0, 0.0],
-                         body_yaw=0.0, duration=0.8)
-        time.sleep(0.9)
+                         body_yaw=0.0, duration=0.5)
+        time.sleep(0.6)
         anim.resume()

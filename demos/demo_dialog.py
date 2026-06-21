@@ -37,8 +37,8 @@ from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_demo.animator import Animator, NAMED_GESTURES
 from reachy_demo.audio import (
     MIC, MIC_RATE, VAD_CHUNK, SPEAKER,
-    boot_beeps, error_chime, pcm_to_wav_bytes,
-    play_wav_blocking, speaking_chime,
+    assert_mic_ok, boot_beeps, cleanup_orphan_capture, error_chime,
+    pcm_to_wav_bytes, play_wav_blocking, speaking_chime, startup_device_report,
 )
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
 from reachy_demo.groq_client import load_api_key, transcribe_lang, language_directive
@@ -252,6 +252,11 @@ class ContinuousListener:
 
                 raw = arecord.stdout.read(VAD_CHUNK * 2)
                 if not raw or len(raw) < VAD_CHUNK * 2:
+                    # Mic stream died — post an error so the main loop surfaces
+                    # it instead of hanging on events.get() forever.
+                    self.q.put({"type": "mic_error",
+                                "reason": (f"mic stream closed (got "
+                                           f"{len(raw) if raw else 0} bytes)")})
                     break
 
                 # If threshold mode changed since last chunk, rebuild the iterator next iter
@@ -485,6 +490,15 @@ def main():
     vad_model = load_silero_vad()
     client = Groq(api_key=GROQ_KEY)
     wait_for_daemon(daemon_proc)
+    # Kill leftover mic-capture processes from a crashed previous run (the #1
+    # cause of "robot doesn't listen") and hard-gate on a working mic.
+    orphans = cleanup_orphan_capture()
+    if orphans:
+        print(f"  Killed {orphans} orphan mic-capture process(es).")
+    for line in startup_device_report():
+        print(line)
+    mic_info = assert_mic_ok()   # raises RuntimeError if mic is truly dead
+    print(f"  MIC check: RMS={mic_info['rms']:.0f} — OK")
 
     try:
         with ReachyMini(connection_mode="localhost_only",
@@ -519,6 +533,12 @@ def main():
             try:
                 while True:
                     ev = events.get()
+                    if ev["type"] == "mic_error":
+                        # Background listener lost the mic (USB drop / orphan
+                        # grab). Surface it and end cleanly.
+                        print(f"\n  MICROPHONE ERROR: {ev['reason']}")
+                        print("  Restart the demo after fixing the mic.")
+                        break
                     if ev["type"] == "start":
                         # Barge-in is handled inside engine._drain_barge_in.
                         # A 'start' arriving here means speech started while we
