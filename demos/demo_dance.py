@@ -154,11 +154,12 @@ def speak_and_animate(mini, audio_path, audio_duration):
 # Music — volume 2.0 (+6 dB louder than before)
 # ---------------------------------------------------------------------------
 
-def play_music(path: str) -> tuple[subprocess.Popen, float]:
-    """Start music playback. Returns (process, wall-clock start time) for sync."""
+def play_music(path: str, loops: int = 2) -> tuple[subprocess.Popen, float]:
+    """Start music playback (plays <loops> times, then stops).
+    Returns (process, wall-clock start time) for sync."""
     proc = subprocess.Popen(
         ["ffmpeg", "-hide_banner", "-loglevel", "error",
-         "-stream_loop", "-1", "-i", path,
+         "-stream_loop", str(loops), "-i", path,
          "-af", "volume=2.0", "-f", "alsa", SPEAKER],
     )
     return proc, time.time()
@@ -345,7 +346,7 @@ def main():
 
             # ── Act 2: Macarena ──────────────────────────────────────────
             print("\n  ── Act 2: Macarena ──")
-            beat_proc, music_t0 = play_music(MUSIC)
+            beat_proc, music_t0 = play_music(MUSIC, loops=2)
             try:
                 # Dramatic entry spins
                 spin(mini,  1.4, duration=0.35)
@@ -375,17 +376,20 @@ def main():
                 mini.play_move(em.get("enthusiastic2"),        play_frequency=80.0, sound=False)
                 mini.play_move(em.get("success1"),             play_frequency=80.0, sound=False)
 
-                # ── Extra 10 s: keep dancing while music plays ─────
-                extra_end = time.time() + 10
-                while time.time() < extra_end:
+                # ── Keep dancing until music actually stops ─────────
+                while beat_proc.poll() is None:
                     for pose in MACARENA_POSES:
-                        if time.time() >= extra_end:
+                        if beat_proc.poll() is not None:
                             break
                         macarena_beat(mini, pose, scale=1.6, target_t=time.time() + BEAT)
 
             finally:
                 beat_proc.terminate()
                 beat_proc.wait()
+
+            # ── Angry reaction ───────────────────────────────────────────
+            print("  HEY! Where's the music?!")
+            chirp(300, 100, 0.30, vol=0.6)  # sad descending whine
 
             # ── Bow out ──────────────────────────────────────────────────
             print("\n  ── Bow out ──")

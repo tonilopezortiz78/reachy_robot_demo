@@ -663,12 +663,12 @@ GREETINGS = [
 ]
 
 DANCE_FUNNIES = [
-    "Hey, who stopped the music? I was dancing!",
-    "Whoa, where'd the music go? I had more moves!",
-    "Hey, I wasn't done yet! That was my jam!",
-    "Oh, did the song end? I could've kept going all night!",
-    "Hey, bring back the beat! I was just getting started!",
-    "Wait, wait — who cut the music? I was in the zone!",
+    "HEY! Who stopped my music?! I was dancing there!",
+    "WHERE IS THE MUSIC?! I demand to speak to the DJ!",
+    "Hey! Bring it back! I had more moves to show!",
+    "Wait wait wait — who cut the beat?! Not cool!",
+    "HELLO?! Where's my music?! I wasn't done yet!",
+    "NOOO! The music! I need my music! This is an outrage!",
 ]
 
 

@@ -149,11 +149,11 @@ def _jump(mini):
 
 def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
     """
-    Full beat-synced Macarena show (~30 s):
-      excited_chirp → music starts → entry spins (double-speed, head tracking)
+    Full beat-synced Macarena show:
+      excited_chirp → music starts (2 loops of macarena.mp3) → entry spins
       → 3 escalating cycles (scale 1.0→1.3→1.6) + jump transitions
       → climax (3× spin360 + dizzy_spin + polyrhythm_combo + enthusiastic2
-      + success1) → 10 s extra Macarena cycles → music stops
+      + success1) → keeps dancing until music actually stops → music ends
       → robot looks confused → speaks `funny_text`
 
     Pauses the Animator for the full duration so beat-sync goto_target calls
@@ -169,9 +169,9 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
     try:
         excited_chirp()   # clears ALSA + signals excitement
 
-        music_proc = subprocess.Popen(
+         music_proc = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-stream_loop", "-1", "-i", str(MUSIC_PATH),
+             "-stream_loop", "2", "-i", str(MUSIC_PATH),
              "-af", "volume=2.0", "-f", "alsa", SPEAKER],
         )
         music_t0 = time.time()
@@ -210,11 +210,10 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
         mini.play_move(emotions.get("enthusiastic2"),  play_frequency=80.0, sound=False)
         mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
 
-        # ── Extra 10 s: keep dancing while music plays ──────────────
-        extra_end = time.time() + 10
-        while time.time() < extra_end:
+        # ── Keep dancing until music actually stops ─────────────────
+        while music_proc.poll() is None:
             for pose in _MACARENA_POSES:
-                if time.time() >= extra_end:
+                if music_proc.poll() is not None:
                     break
                 _beat(mini, pose, scale=1.6, target_t=time.time() + _BEAT)
 
