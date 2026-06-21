@@ -12,6 +12,9 @@ Covers:
 """
 
 import io
+import os
+import re
+import select
 import subprocess
 import threading
 import time
@@ -149,35 +152,26 @@ def startup_device_report() -> list[str]:
     else:
         lines.append(f"  USB motors : {ttyACM} MISSING — robot not connected or switch wrong")
 
-    # ── Live RMS signal test (0.5 s capture, silence = hardware issue) ───────
-    try:
-        proc = subprocess.Popen(
-            ["pacat", "--record", "--raw",
-             f"--device={MIC}",
-             f"--rate={MIC_RATE}", "--channels=1", "--format=s16le"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
-        n = MIC_RATE // 2  # 0.5 seconds of samples
-        raw = proc.stdout.read(n * 2)
-        proc.terminate()
-        proc.wait()
-        if len(raw) >= n * 2:
-            arr = np.frombuffer(raw[: n * 2], dtype=np.int16).astype(np.float32)
-            rms = float(np.sqrt(np.mean(arr ** 2)))
-            if rms < 5:
-                lines.append(
-                    f"  MIC RMS : {rms:.0f} — WARNING: signal is silent! "
-                    "Try replug USB cable or restart PipeWire: "
-                    "`systemctl --user restart pipewire pipewire-pulse`"
-                )
-            elif rms < 50:
-                lines.append(f"  MIC RMS : {rms:.0f} — very low (no one speaking? might be OK)")
-            else:
-                lines.append(f"  MIC RMS : {rms:.0f} — OK")
+    # ── Live RMS signal test (0.5 s capture, hard-timeout so it NEVER hangs) ──
+    n = MIC_RATE // 2  # 0.5 seconds of samples
+    raw = capture_pcm(MIC, n * 2, timeout_s=2.5)
+    if len(raw) >= n * 2:
+        arr = np.frombuffer(raw[: n * 2], dtype=np.int16).astype(np.float32)
+        rms = float(np.sqrt(np.mean(arr ** 2)))
+        if rms < 5:
+            lines.append(
+                f"  MIC RMS : {rms:.0f} — WARNING: signal is silent! "
+                "(will auto-repair)"
+            )
+        elif rms < 50:
+            lines.append(f"  MIC RMS : {rms:.0f} — very low (no one speaking? might be OK)")
         else:
-            lines.append(f"  MIC RMS : could not capture (only {len(raw)} bytes — pacat failed)")
-    except Exception as e:
-        lines.append(f"  MIC RMS : error — {e}")
+            lines.append(f"  MIC RMS : {rms:.0f} — OK")
+    else:
+        lines.append(
+            f"  MIC RMS : could not capture ({len(raw)} bytes in 2.5s — "
+            "PipeWire source wedged; will auto-repair)"
+        )
 
     return lines
 
@@ -226,39 +220,62 @@ def cleanup_orphan_capture() -> int:
     return killed
 
 
-def verify_mic(duration_s: float = 0.5) -> dict:
-    """Open the robot mic, capture `duration_s` seconds, report signal health.
-    Returns {ok, rms, bytes, reason}. `ok` is True only when the mic delivered
-    full audio with RMS >= 5 (real signal — not necessarily speech, but not
-    dead-silent). A short/0-byte read means the device is held by another
-    process or unplugged. Does NOT clean orphans itself — call
-    cleanup_orphan_capture() first if you want that.
+def capture_pcm(device: str, n_bytes: int, timeout_s: float) -> bytes:
+    """Capture up to `n_bytes` of raw PCM from `device` via pacat, with a HARD
+    timeout. Returns whatever arrived (possibly b"") — NEVER blocks longer than
+    `timeout_s`.
+
+    This is the core anti-hang primitive. A wedged PipeWire source (state
+    "(null)") opens fine but then delivers ZERO bytes forever; a plain
+    blocking read() on it freezes the whole demo. select() with a deadline
+    means a dead pipe fails fast instead of hanging.
     """
-    n_samples = int(MIC_RATE * duration_s)
-    n_bytes = n_samples * 2
     try:
         proc = subprocess.Popen(
-            ["pacat", "--record", "--raw", f"--device={MIC}",
+            ["pacat", "--record", "--raw", f"--device={device}",
              f"--rate={MIC_RATE}", "--channels=1", "--format=s16le"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
+    except Exception:
+        return b""
+    buf = b""
+    deadline = time.time() + timeout_s
+    try:
+        fd = proc.stdout.fileno()
+        while len(buf) < n_bytes:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            r, _, _ = select.select([fd], [], [], remaining)
+            if not r:
+                break                       # timeout — no data available
+            chunk = os.read(fd, n_bytes - len(buf))
+            if not chunk:
+                break                       # EOF — pacat exited (device busy)
+            buf += chunk
+    finally:
+        proc.terminate()
         try:
-            raw = proc.stdout.read(n_bytes)
-        finally:
-            proc.terminate()
-            try:
-                proc.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-    except Exception as e:
-        return {"ok": False, "rms": 0.0, "bytes": 0, "reason": f"capture error: {e}"}
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    return buf
 
+
+def verify_mic(duration_s: float = 0.5, timeout_s: float = 2.5) -> dict:
+    """Open the robot mic, capture `duration_s` seconds (with a hard timeout),
+    report signal health. Returns {ok, rms, bytes, reason}. `ok` is True only
+    when the mic delivered full audio with RMS >= 5. A short/0-byte read within
+    the timeout means the PipeWire source is wedged, busy, or unplugged — it
+    NEVER hangs waiting. Does NOT clean orphans itself.
+    """
+    n_bytes = int(MIC_RATE * duration_s) * 2
+    raw = capture_pcm(MIC, n_bytes, timeout_s)
     if len(raw) < n_bytes:
         return {"ok": False, "rms": 0.0, "bytes": len(raw),
-                "reason": (f"mic delivered {len(raw)}/{n_bytes} bytes — device is "
-                           "busy or unplugged. Run cleanup_orphan_capture() or "
-                           "replug the USB cable, then restart.")}
+                "reason": (f"mic delivered {len(raw)}/{n_bytes} bytes within "
+                           f"{timeout_s}s — PipeWire source wedged/busy/unplugged.")}
     arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
     rms = float(np.sqrt(np.mean(arr ** 2)))
     if rms < 5:
@@ -268,27 +285,114 @@ def verify_mic(duration_s: float = 0.5) -> dict:
     return {"ok": True, "rms": rms, "bytes": len(raw), "reason": "ok"}
 
 
-def assert_mic_ok() -> dict:
-    """Hard gate for talking demos: clean orphans, verify the mic, retry once
-    on failure, then RAISE RuntimeError if the mic is truly dead (0 bytes /
-    capture error). Low RMS (quiet room, no one speaking) does NOT raise —
-    only a genuinely inaccessible mic does. Returns the final verify dict so
-    the caller can log the RMS. Call this at startup, before listener.start().
+# ── Audio pipeline repair ──────────────────────────────────────────────────────
+# Diagnosed failure mode: the Pollen Audio mic's PipeWire source falls into a
+# "(null)" / wedged state where pacat opens but delivers no data. The hardware
+# is fine (raw ALSA capture still works) — only PipeWire's view is broken.
+# Recovery escalates: kill orphan holders → suspend-toggle the source → kick the
+# device at the ALSA level → (last resort) restart PipeWire. Each step is cheap
+# and safe to run on a healthy system too.
+
+def _alsa_card_index(keyword: str = "Reachy Mini Audio") -> int | None:
+    """Find the ALSA card index of the robot Audio capture device, or None."""
+    try:
+        out = subprocess.run(["arecord", "-l"], capture_output=True,
+                             text=True, timeout=3).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        if keyword.lower() in line.lower():
+            m = re.match(r"card (\d+):", line)
+            if m:
+                return int(m.group(1))
+    return None
+
+
+def _alsa_wake() -> None:
+    """Briefly capture at the raw ALSA level to kick a wedged USB source awake.
+    Raw ALSA works even when PipeWire's source is stuck, and opening it often
+    nudges PipeWire's source back to a delivering state. Best-effort."""
+    idx = _alsa_card_index()
+    if idx is None:
+        return
+    try:
+        subprocess.run(
+            ["arecord", "-D", f"plughw:{idx},0", "-f", "S16_LE",
+             "-r", "16000", "-c", "1", "-d", "1", "/dev/null"],
+            capture_output=True, timeout=4,
+        )
+    except Exception:
+        pass
+
+
+def repair_audio(log=None, restart_pipewire: bool = False) -> None:
+    """Escalating recovery for a wedged audio pipeline. Safe to call anytime.
+    With restart_pipewire=False does the light steps (orphan kill, suspend
+    toggle, ALSA wake); with True also restarts PipeWire (heaviest hammer)."""
+    def _say(m):
+        (log.event(m) if log else print(m, flush=True))
+
+    cleanup_orphan_capture()
+    src = _detect_robot_mic(_LAPTOP_MIC_FALLBACK, wait_s=2.0)
+    # Suspend-toggle clears a "(null)" source state.
+    for val in ("1", "0"):
+        try:
+            subprocess.run(["pactl", "suspend-source", src, val],
+                           capture_output=True, timeout=3)
+            time.sleep(0.3)
+        except Exception:
+            pass
+    _alsa_wake()
+    if restart_pipewire:
+        _say("  [audio-repair] restarting PipeWire (pipewire/pulse/wireplumber)...")
+        try:
+            subprocess.run(["systemctl", "--user", "restart",
+                            "pipewire", "pipewire-pulse", "wireplumber"],
+                           capture_output=True, timeout=15)
+        except Exception as e:
+            _say(f"  [audio-repair] PipeWire restart failed: {e}")
+        time.sleep(3.0)        # let devices re-enumerate
+        _alsa_wake()           # kick the device again after restart
+        redetect_mic()         # source name may have changed; refresh MIC
+
+
+def ensure_mic_working(log=None, max_repairs: int = 2) -> dict:
+    """Bulletproof startup gate, run EVERY launch: verify the mic delivers real
+    audio (hard-timeout, never hangs) and AUTO-REPAIR the audio pipeline if not
+    — suspend-toggle + ALSA wake first, then a PipeWire restart — re-probing
+    after each step. Raises RuntimeError only if the mic is still dead after all
+    recovery. Returns the final verify dict (with rms) on success.
     """
+    def _say(m):
+        (log.event(m) if log else print(m, flush=True))
+
     cleanup_orphan_capture()
     info = verify_mic()
     if info["ok"]:
         return info
-    # First attempt failed — try one more cleanup + verify in case a stubborn
-    # orphan needed a moment to release the device.
-    cleanup_orphan_capture()
-    info = verify_mic()
-    if info["ok"]:
-        return info
+
+    _say(f"  [audio] mic check FAILED: {info['reason']}")
+    for attempt in range(1, max_repairs + 1):
+        heavy = attempt >= 2     # escalate to a PipeWire restart on later tries
+        _say(f"  [audio] auto-repair attempt {attempt}/{max_repairs}"
+             f"{' (restarting PipeWire)' if heavy else ''}...")
+        repair_audio(log=log, restart_pipewire=heavy)
+        info = verify_mic()
+        if info["ok"]:
+            _say(f"  [audio] recovered — mic RMS {info['rms']:.0f} OK")
+            return info
+        _say(f"  [audio] still failing: {info['reason']}")
+
     raise RuntimeError(
-        f"Robot microphone is not producing audio: {info['reason']}\n"
-        "The demo cannot listen without a working mic. Fix the issue above and "
-        "restart. Diagnostic: ./run.sh tools/test_mic.py")
+        "Robot microphone could not be recovered after auto-repair: "
+        f"{info['reason']}\n"
+        "Try physically replugging the robot's USB cable, then restart. "
+        "Diagnostic: ./run.sh tools/test_mic.py")
+
+
+def assert_mic_ok() -> dict:
+    """Back-compat alias for ensure_mic_working() (now self-repairing)."""
+    return ensure_mic_working()
 
 
 # ── Music/speaker audio detection ──────────────────────────────────────────────

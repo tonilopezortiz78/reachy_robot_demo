@@ -19,6 +19,8 @@ Two robustness features baked in (both learned the hard way on this hardware):
     times before giving up. This is the "robot stops listening after I touch
     the audio settings" fix. See reachy_demo.audio.redetect_mic.
 """
+import os
+import select
 import subprocess
 import threading
 import time
@@ -28,7 +30,14 @@ import torch
 from silero_vad import VADIterator
 
 import reachy_demo.audio as audio   # live audio.MIC (updated by redetect_mic)
-from reachy_demo.audio import MIC_RATE, VAD_CHUNK, cleanup_orphan_capture, redetect_mic
+from reachy_demo.audio import (
+    MIC_RATE, VAD_CHUNK, cleanup_orphan_capture, redetect_mic, repair_audio,
+)
+
+# If the capture pipe delivers no audio for this long, treat it as wedged. The
+# mic streams a frame every ~30ms even in silence (zeros), so a multi-second gap
+# means the PipeWire source died — trigger recovery instead of blocking forever.
+_READ_STALL_S = 4.0
 
 # ── Default VAD tuning (matches every demo's previous local constants) ─────────
 THRESH_NORMAL   = 0.45   # standard — when robot is silent
@@ -109,6 +118,28 @@ class ContinuousListener:
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         ), device
 
+    def _read_frame(self, proc) -> bytes | None:
+        """Read exactly VAD_CHUNK*2 bytes, but NEVER block longer than
+        _READ_STALL_S. Returns the frame, or None if the pipe stalled / died
+        (the caller then runs recovery). select() is what stops a wedged
+        PipeWire source from freezing the listener forever."""
+        need = VAD_CHUNK * 2
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + _READ_STALL_S
+        while len(buf) < need:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None                  # stall — treat as dead pipe
+            r, _, _ = select.select([fd], [], [], remaining)
+            if not r:
+                return None                  # no data within window — dead pipe
+            chunk = os.read(fd, need - len(buf))
+            if not chunk:
+                return None                  # EOF — pacat exited
+            buf += chunk
+        return buf
+
     def _loop(self):
         arecord, device = self._open_capture()
         if self.log:
@@ -129,34 +160,42 @@ class ContinuousListener:
                     self._tail_count = 0
                     self._speech_buf = []
 
-                raw = arecord.stdout.read(VAD_CHUNK * 2)
-                if not raw or len(raw) < VAD_CHUNK * 2:
-                    # Mic stream died — device lost, suspended, or grabbed by
-                    # another process (e.g. cable replug, PipeWire restart).
-                    # Instead of giving up forever, RE-DETECT the robot mic and
-                    # reopen. Only surface a hard error if several reopen attempts
-                    # in a row fail.
+                raw = self._read_frame(arecord)
+                if raw is None:
+                    # Mic stream wedged/died mid-session — device lost,
+                    # suspended, PipeWire source fell into "(null)", or grabbed
+                    # by another process (cable replug / PipeWire restart).
+                    # Don't give up: RE-DETECT and reopen, escalating to a full
+                    # audio repair (suspend-toggle, ALSA wake, PipeWire restart)
+                    # if simple reopens don't help. Only a hard error after the
+                    # repair budget is exhausted.
+                    recover_attempts += 1
                     if self.log:
                         self.log.event(
-                            f"  [listener] stream closed (got "
-                            f"{len(raw) if raw else 0} bytes) — recovering...")
+                            f"  [listener] capture stalled — recovery "
+                            f"{recover_attempts}/{self._max_recover}...")
                     try:
                         arecord.terminate(); arecord.wait(timeout=1.0)
                     except Exception:
                         pass
-                    recover_attempts += 1
                     if recover_attempts > self._max_recover:
                         self.q.put({"type": "mic_error",
-                                    "reason": (f"mic stream kept closing after "
-                                               f"{self._max_recover} reopen "
-                                               "attempts — device lost")})
+                                    "reason": (f"mic stream unrecoverable after "
+                                               f"{self._max_recover} attempts "
+                                               "(incl. PipeWire restart)")})
                         break
-                    cleanup_orphan_capture()
-                    new_dev = redetect_mic()        # re-poll PipeWire for the robot mic
-                    time.sleep(0.4)                 # let the device settle
+                    # Escalate: light reopen first, full PipeWire repair later.
+                    if recover_attempts <= 2:
+                        cleanup_orphan_capture()
+                        new_dev = redetect_mic()
+                        time.sleep(0.4)
+                    else:
+                        repair_audio(log=self.log, restart_pipewire=True)
+                        new_dev = audio.MIC
                     arecord, device = self._open_capture()
                     if self.log and new_dev != device:
                         self.log.event(f"  [listener] re-detected mic: {new_dev}")
+                    device = new_dev
                     vad_iter = None
                     continue
                 recover_attempts = 0   # got a good frame — reset the recovery counter

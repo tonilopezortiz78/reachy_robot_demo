@@ -43,7 +43,7 @@ from reachy_demo.search import web_search
 from reachy_demo.listener import ContinuousListener
 from reachy_demo.audio import (
     MIC_RATE, SPEAKER,
-    assert_mic_ok, boot_beeps, cleanup_orphan_capture, error_chime,
+    boot_beeps, cleanup_orphan_capture, ensure_mic_working, error_chime,
     pcm_to_wav_bytes, speaking_chime, startup_device_report,
     start_thinking_ticks, thinking_cue,
 )
@@ -566,7 +566,9 @@ def main():
         log.event("  Audio devices:")
         for line in startup_device_report():
             log.event(line)
-        mic_info = assert_mic_ok()   # raises RuntimeError if mic is truly dead
+        # Verify the mic delivers audio and AUTO-REPAIR the pipeline if not
+        # (suspend-toggle, ALSA wake, then PipeWire restart). Never hangs.
+        mic_info = ensure_mic_working(log)
         log.event(f"  MIC check: RMS={mic_info['rms']:.0f} — OK")
     except Exception as e:
         log.error("startup (daemon/VAD)", e)
