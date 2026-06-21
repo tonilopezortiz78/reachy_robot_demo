@@ -22,9 +22,7 @@ Press Ctrl-C to stop.
 """
 
 import concurrent.futures
-import math
 import queue
-import random
 import re
 import subprocess
 import sys
@@ -34,15 +32,15 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from ddgs import DDGS
 from groq import Groq
 from silero_vad import load_silero_vad, VADIterator
 
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
-from reachy_mini.utils import create_head_pose
 
 from reachy_demo.animator import Animator, NAMED_GESTURES
+from reachy_demo.dance import DANCE_KEYWORDS, do_macarena, excited_chirp
+from reachy_demo.search import web_search
 from reachy_demo.audio import (
     MIC, MIC_RATE, VAD_CHUNK, SPEAKER,
     boot_beeps, error_chime, pcm_to_wav_bytes,
@@ -62,206 +60,6 @@ from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_edge import synth_to_file  # PITCH +48Hz set in tts_edge.py
 
 ROOT = Path(__file__).parent.parent
-
-# ── Sound effects ─────────────────────────────────────────────────────────────
-
-def _chirp(f0, f1, dur, vol=0.65):
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi",
-         "-i", f"aevalsrc=sin(2*PI*({f0}*t+({f1}-{f0})*t*t/(2*{dur})))*{vol}:c=mono:s=22050",
-         "-t", str(dur), "-f", "alsa", SPEAKER],
-        check=False,
-    )
-
-
-def _excited_chirp():
-    """Two ascending sweeps — used before/during dance to signal excitement."""
-    _chirp(500, 1800, 0.14, vol=0.75)
-    time.sleep(0.04)
-    _chirp(800, 2200, 0.12, vol=0.85)
-
-
-# ── Web search (DuckDuckGo, no API key) ──────────────────────────────────────
-
-_SEARCH_FILLER = re.compile(
-    r"^\s*(?:can\s+you\s+|please\s+|tell\s+me\s+|what\s+(?:is\s+|are\s+)?|"
-    r"how\s+much\s+(?:is\s+)?|give\s+me\s+(?:the\s+)?|"
-    r"look\s+up\s+|search\s+(?:for\s+)?|find\s+(?:me\s+)?)+",
-    re.IGNORECASE,
-)
-
-
-def _clean_query(text: str) -> str:
-    return _SEARCH_FILLER.sub("", text).strip(" ?.,!")
-
-
-def web_search(query: str, max_results: int = 3) -> str:
-    """DuckDuckGo search — returns compact result string or empty string on failure."""
-    q = _clean_query(query)
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(q, max_results=max_results))
-        if not results:
-            return ""
-        parts = []
-        for r in results:
-            title = r.get("title", "")
-            body  = r.get("body", "")
-            if title or body:
-                parts.append(f"{title}: {body}" if title else body)
-        return " | ".join(parts)[:800]
-    except Exception:
-        return ""
-
-
-# ── Dance keywords (multilingual) ────────────────────────────────────────────
-
-DANCE_KEYWORDS = {
-    "dance", "dancing", "groove", "boogie", "moves", "move it", "macarena",
-    "bailar", "baila", "baile", "bailemos", "bailas",                  # Spanish
-    "danser", "danse", "dansez",                                        # French
-    "tanzen", "tanz",                                                   # German
-    "ballare", "balla", "ballo",                                        # Italian
-    "танцуй", "танцевать", "танец",                                     # Russian
-    "踊", "踊れ", "ダンス", "おどって",                                # Japanese
-    "跳舞", "舞",                                                       # Chinese
-    "رقص", "ارقص",                                                     # Arabic
-    "nac", "naach",                                                     # Hindi
-}
-
-DANCE_PICKS = [
-    "groovy_sway_and_roll", "polyrhythm_combo", "chicken_peck",
-    "dizzy_spin", "jackson_square", "interwoven_spirals",
-    "head_tilt_roll", "chin_lead",
-]
-
-# ── Macarena beat-sync constants (port of demo_dance.py) ─────────────────────
-
-MUSIC_PATH    = ROOT / "music" / "macarena.mp3"
-_BEAT         = 0.5805   # 103.4 BPM
-
-_MACARENA_POSES = [
-    ( 0.08, -0.42,  0.10,   0.55, [ 0.10, -0.72]),
-    ( 0.15, -0.52,  0.14,   0.80, [ 0.05, -0.85]),
-    ( 0.08,  0.42, -0.10,  -0.55, [ 0.72, -0.10]),
-    ( 0.15,  0.52, -0.14,  -0.80, [ 0.85, -0.05]),
-    ( 0.04, -0.20,  0.30,   1.00, [ 0.60, -0.60]),
-    ( 0.04,  0.20, -0.30,  -1.00, [-0.60,  0.60]),
-    (-0.22,  0.05,  0.14,   1.30, [ 0.80,  0.80]),
-    (-0.14,  0.05, -0.14,  -1.40, [ 0.80,  0.80]),
-]
-
-
-def _mac_clamp(v, lim):
-    return max(-lim, min(lim, v))
-
-
-def _mac_beat(mini, pose, scale, target_t):
-    p, y, r, by, ants = pose
-    dur = max(0.12, target_t - time.time() - 0.04)
-    mini.goto_target(
-        head=create_head_pose(
-            pitch=_mac_clamp(p * scale, 0.36),
-            yaw=_mac_clamp(y * scale, 1.50),
-            roll=_mac_clamp(r * scale, 0.36),
-            degrees=False,
-        ),
-        antennas=[_mac_clamp(ants[0] * scale, 0.80),
-                  _mac_clamp(ants[1] * scale, 0.80)],
-        body_yaw=_mac_clamp(by * scale, 1.40),
-        duration=dur,
-    )
-    rem = target_t - time.time()
-    if rem > 0:
-        time.sleep(rem)
-
-
-def _mac_spin(mini, angle, dur=0.42):
-    mini.goto_target(head=create_head_pose(), antennas=[0.0, 0.0],
-                     body_yaw=angle, duration=dur)
-    time.sleep(dur + 0.05)
-
-
-def _mac_spin360(mini):
-    mini.goto_target(head=create_head_pose(pitch=0.10, degrees=False),
-                     antennas=[0.80, -0.80], body_yaw=2.79, duration=0.22)
-    time.sleep(0.02)
-    mini.goto_target(head=create_head_pose(pitch=0.10, degrees=False),
-                     antennas=[-0.80, 0.80], body_yaw=-2.79, duration=0.18)
-    time.sleep(0.02)
-    mini.goto_target(head=create_head_pose(pitch=0.25, degrees=False),
-                     antennas=[0.80, 0.80], body_yaw=0.0, duration=0.28)
-    time.sleep(0.10)
-
-
-def _mac_jump(mini):
-    mini.goto_target(head=create_head_pose(pitch=-0.38, roll=0.10, degrees=False),
-                     antennas=[-0.50, -0.50], body_yaw=0.0, duration=0.50)
-    time.sleep(0.02)
-    mini.goto_target(head=create_head_pose(pitch=0.40, roll=-0.06, degrees=False),
-                     antennas=[0.90, 0.90], body_yaw=0.0, duration=0.07)
-    time.sleep(0.12)
-
-
-def do_macarena(mini, dances, emotions, anim, log=None):
-    """
-    Full beat-synced Macarena — exact port of demo_dance.py.
-
-    _excited_chirp() before music is load-bearing: it clears the ALSA device
-    after the TTS aplay finishes so the music ffmpeg can open it without
-    "Device or resource busy".
-    """
-    if log:
-        log.event("  [dance] Macarena starting!")
-    anim.pause()
-    music_proc = None
-    try:
-        # Chirp first — clears ALSA from previous aplay AND signals excitement
-        _excited_chirp()
-
-        music_proc = subprocess.Popen(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-stream_loop", "-1", "-i", str(MUSIC_PATH),
-             "-af", "volume=2.0", "-f", "alsa", SPEAKER],
-        )
-        music_t0 = time.time()
-        _mac_spin(mini,  1.4, dur=0.35)
-        _mac_spin(mini, -1.4, dur=0.35)
-        _mac_spin(mini,  0.0, dur=0.28)
-        elapsed  = time.time() - music_t0
-        beat_idx = math.ceil(elapsed / _BEAT)
-        wait_snap = music_t0 + beat_idx * _BEAT - time.time()
-        if wait_snap > 0:
-            time.sleep(wait_snap)
-        for cycle in range(3):
-            scale = 1.0 + cycle * 0.30
-            for i, pose in enumerate(_MACARENA_POSES):
-                _mac_beat(mini, pose, scale,
-                          music_t0 + (beat_idx + cycle * len(_MACARENA_POSES) + i) * _BEAT)
-            if cycle == 1:
-                _mac_jump(mini)
-                mini.play_move(dances.get("groovy_sway_and_roll"), play_frequency=80.0, sound=False)
-            elif cycle > 1:
-                _mac_jump(mini)
-        _excited_chirp()
-        _mac_spin360(mini)
-        mini.play_move(dances.get("dizzy_spin"),       play_frequency=80.0, sound=False)
-        _mac_spin360(mini)
-        mini.play_move(dances.get("polyrhythm_combo"), play_frequency=80.0, sound=False)
-        _excited_chirp()
-        _mac_spin360(mini)
-        mini.play_move(emotions.get("enthusiastic2"),  play_frequency=80.0, sound=False)
-        mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
-    finally:
-        if music_proc is not None:
-            music_proc.terminate()
-            music_proc.wait()
-        mini.goto_target(head=create_head_pose(), antennas=[0.0, 0.0],
-                         body_yaw=0.0, duration=0.8)
-        time.sleep(0.9)
-        anim.resume()
-
 
 GROQ_KEY = load_api_key(ROOT)
 if not GROQ_KEY:
