@@ -236,7 +236,7 @@ def jump(mini):
     time.sleep(0.12)
 
 
-def macarena_section(mini, cycles: int = 3, music_t0: float = 0.0, beat_idx: int = 0):
+def macarena_section(mini, em, da, cycles: int = 3, music_t0: float = 0.0, beat_idx: int = 0):
     """
     Beat-synced Macarena cycles with per-beat drift correction.
 
@@ -244,6 +244,7 @@ def macarena_section(mini, cycles: int = 3, music_t0: float = 0.0, beat_idx: int
     beat_idx:  which beat index we're starting on (accounts for intro spins)
 
     Scale escalation: 1.0 → 1.30 → 1.60 — movements grow each round.
+    Inter-cycle transitions escalate too: nothing → jump+groove → jump.
     """
     for c in range(cycles):
         scale = 1.0 + c * 0.30   # cycle 0: 1.0 | cycle 1: 1.30 | cycle 2: 1.60
@@ -252,7 +253,12 @@ def macarena_section(mini, cycles: int = 3, music_t0: float = 0.0, beat_idx: int
             beat_num = beat_idx + c * len(MACARENA_POSES) + i
             target_t = music_t0 + beat_num * BEAT
             macarena_beat(mini, pose, scale, target_t)
-        if c > 0:
+        if c == 1:
+            # Transition cycle 2 → 3: jump + groove flash to build energy
+            jump(mini)
+            mini.play_move(da.get("groovy_sway_and_roll"), play_frequency=80.0, sound=False)
+        elif c > 1:
+            # After last cycle: jump to clear pose before climax
             jump(mini)
 
 
@@ -333,6 +339,9 @@ def main():
             excited_chirp()
             speak_and_animate(mini, WAV_TEASE, tease_dur)
             excited_chirp()
+            # Tease the dance before music: one groove flash to set expectations
+            mini.play_move(da.get("chin_lead"), play_frequency=80.0, sound=False)
+            excited_chirp()
 
             # ── Act 2: Macarena ──────────────────────────────────────────
             print("\n  ── Act 2: Macarena ──")
@@ -352,14 +361,19 @@ def main():
                 print(f"  Snapped to beat {beat_idx} ({elapsed:.2f}s into music)")
 
                 # 3 escalating Macarena cycles (scale 1.0 → 1.30 → 1.60)
-                macarena_section(mini, cycles=3, music_t0=music_t0, beat_idx=beat_idx)
+                macarena_section(mini, em, da, cycles=3, music_t0=music_t0, beat_idx=beat_idx)
 
-                # Climax — 360 spin illusion + big presets
+                # Climax — punchy sequence using the dances library (each ~1.85s)
                 print("  *** CLIMAX ***")
+                excited_chirp()
                 spin360(mini)
-                mini.play_move(em.get("dance3"), play_frequency=80.0, sound=False)
+                mini.play_move(da.get("dizzy_spin"),           play_frequency=80.0, sound=False)
                 spin360(mini)
-                mini.play_move(em.get("success2"), play_frequency=80.0, sound=False)
+                mini.play_move(da.get("polyrhythm_combo"),     play_frequency=80.0, sound=False)
+                excited_chirp()
+                spin360(mini)
+                mini.play_move(em.get("enthusiastic2"),        play_frequency=80.0, sound=False)
+                mini.play_move(em.get("success1"),             play_frequency=80.0, sound=False)
 
             finally:
                 beat_proc.terminate()
@@ -368,6 +382,8 @@ def main():
             # ── Bow out ──────────────────────────────────────────────────
             print("\n  ── Bow out ──")
             spin(mini, 0.0, duration=0.4)
+            mini.play_move(em.get("proud2"),  play_frequency=80.0, sound=False)
+            time.sleep(0.2)
             mini.play_move(em.get("loving1"), play_frequency=80.0, sound=False)
 
             mini.goto_target(

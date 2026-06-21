@@ -69,6 +69,65 @@ def _detect_robot_mic(default: str) -> str:
 
 MIC = _detect_robot_mic(_LAPTOP_MIC_FALLBACK)   # robot voice mic, auto-detected
 
+
+def startup_device_report() -> list[str]:
+    """
+    Return log lines describing which audio devices are active and whether the
+    mic is actually producing signal. Call once at startup and log every line.
+    """
+    import os
+    lines = []
+
+    # ── Which devices were selected ──────────────────────────────────────────
+    lines.append(f"  MIC     : {MIC}")
+    lines.append(f"  SPEAKER : {SPEAKER}")
+
+    # ── Warn if we fell back to a non-ideal device ───────────────────────────
+    if MIC == _LAPTOP_MIC_FALLBACK:
+        lines.append("  WARNING MIC: robot mic not found — using LAPTOP mic (room noise, wrong device!)")
+    elif "Reachy_Mini_Camera" in MIC:
+        lines.append("  WARNING MIC: using Camera mic — Audio mic missing (Camera mic is silent on this unit)")
+
+    # ── USB device presence ──────────────────────────────────────────────────
+    ttyACM = "/dev/ttyACM0"
+    if os.path.exists(ttyACM):
+        lines.append(f"  USB motors : {ttyACM} present (robot connected)")
+    else:
+        lines.append(f"  USB motors : {ttyACM} MISSING — robot not connected or switch wrong")
+
+    # ── Live RMS signal test (0.5 s capture, silence = hardware issue) ───────
+    try:
+        proc = subprocess.Popen(
+            ["pacat", "--record", "--raw",
+             f"--device={MIC}",
+             f"--rate={MIC_RATE}", "--channels=1", "--format=s16le"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        n = MIC_RATE // 2  # 0.5 seconds of samples
+        raw = proc.stdout.read(n * 2)
+        proc.terminate()
+        proc.wait()
+        if len(raw) >= n * 2:
+            arr = np.frombuffer(raw[: n * 2], dtype=np.int16).astype(np.float32)
+            rms = float(np.sqrt(np.mean(arr ** 2)))
+            if rms < 5:
+                lines.append(
+                    f"  MIC RMS : {rms:.0f} — WARNING: signal is silent! "
+                    "Try replug USB cable or restart PipeWire: "
+                    "`systemctl --user restart pipewire pipewire-pulse`"
+                )
+            elif rms < 50:
+                lines.append(f"  MIC RMS : {rms:.0f} — very low (no one speaking? might be OK)")
+            else:
+                lines.append(f"  MIC RMS : {rms:.0f} — OK")
+        else:
+            lines.append(f"  MIC RMS : could not capture (only {len(raw)} bytes — pacat failed)")
+    except Exception as e:
+        lines.append(f"  MIC RMS : error — {e}")
+
+    return lines
+
+
 # ── VAD constants ─────────────────────────────────────────────────────────────
 
 MIC_RATE       = 16000
@@ -144,44 +203,101 @@ def thinking_blips():
 
 def start_thinking_ticks(stop_event: threading.Event) -> threading.Thread:
     """
-    Spawn a background thread that emits a slow sci-fi 'thinking scan' in a
-    loop until `stop_event` is set. Use while waiting for STT/LLM so the user
-    sees the robot is alive but hasn't fallen asleep.
-
-    Call site:
-        stop = threading.Event()
-        start_thinking_ticks(stop)
-        ... do STT + LLM + TTS prep ...
-        stop.set()   # kills the loop immediately, before audio plays
-
-    The scan is a rising chirp (low → high), followed by a long gap. Sounds
-    like a robot actively reasoning, not a clock. Sleeps are broken into
-    50ms slices so stop.set() takes effect within ~50ms.
+    Background thinking sounds. Randomly selects from several 'phrases' so it
+    never sounds mechanical. Stops within ~40ms of stop_event being set.
     """
+    def _wait(secs: float) -> bool:
+        end = time.time() + secs
+        while time.time() < end:
+            if stop_event.is_set():
+                return False
+            time.sleep(min(0.04, end - time.time()))
+        return True
+
     def _run():
-        # pattern: (kind, f0, f1, dur, vol, gap)
-        #   chirp  : sweep from f0 → f1 Hz over `dur` seconds at `vol` (0-1)
-        #   gap    : pause for `gap` seconds
-        # Slow sci-fi scan + longer gap feels like the robot is "scanning"
-        # its memory for an answer, not ticking like a clock.
-        pattern = [
-            ("chirp", 380, 1100, 0.55, 0.22, 0.0),
-            ("gap",     0,    0, 0.00, 0.00, 1.30),
-            ("chirp", 460, 1300, 0.40, 0.20, 0.0),
-            ("gap",     0,    0, 0.00, 0.00, 1.50),
+        import random
+        rng = random.Random()
+
+        def _rising_scan():
+            chirp_nb(280, rng.randint(1000, 1300), 0.52, 0.21)
+            _wait(0.57)
+
+        def _falling_scan():
+            chirp_nb(rng.randint(1100, 1400), 300, 0.44, 0.18)
+            _wait(0.49)
+
+        def _double_sweep():
+            chirp_nb(420, 1050, 0.22, 0.19)
+            if not _wait(0.27): return
+            chirp_nb(1050, 420, 0.20, 0.15)
+            _wait(0.24)
+
+        def _data_burst():
+            # 3-4 rapid blips with shifting pitch — "processing data"
+            base = rng.randint(550, 950)
+            freqs = [base, int(base * 1.3), base, int(base * 0.8)][:rng.randint(3, 4)]
+            for f in freqs:
+                if stop_event.is_set(): return
+                blip(f, 0.034, 0.15, block=True)
+                if not _wait(0.026): return
+
+        def _scale_run():
+            # 5-note ascending or descending flurry
+            steps = [360, 480, 620, 800, 1020]
+            if rng.random() > 0.5:
+                steps = list(reversed(steps))
+            for f in steps:
+                if stop_event.is_set(): return
+                blip(f, 0.036, 0.14, block=True)
+                if not _wait(0.022): return
+
+        def _wobble_pulse():
+            # tremolo: amplitude-modulated tone — sounds like robot humming to itself
+            freq = rng.choice([480, 580, 700, 840])
+            rate = rng.choice([6, 8, 10])
+            expr = f"sin(2*PI*{freq}*t)*(0.55+0.45*sin(2*PI*{rate}*t))"
+            _beep(expr, 0.50, vol=0.18, block=False)
+            _wait(0.55)
+
+        def _stutter_burst():
+            # rapid-fire tiny blips — like a CPU spiking
+            freq = rng.randint(580, 1050)
+            count = rng.randint(4, 8)
+            for _ in range(count):
+                if stop_event.is_set(): return
+                blip(freq, 0.020, 0.12, block=True)
+                if not _wait(0.015): return
+                freq = int(freq * rng.uniform(0.88, 1.14))
+
+        def _ping_echo():
+            # bright ping then a softer echo a beat later
+            f = rng.randint(900, 1400)
+            blip(f, 0.05, 0.22, block=True)
+            if not _wait(0.18): return
+            blip(int(f * 0.75), 0.06, 0.10, block=True)
+
+        def _fm_warble():
+            # frequency-modulated tone — eerie wobbling sweep
+            fc = rng.randint(400, 700)
+            depth = rng.randint(80, 180)
+            rate = rng.randint(4, 9)
+            expr = f"sin(2*PI*({fc}+{depth}*sin(2*PI*{rate}*t))*t)"
+            _beep(expr, 0.48, vol=0.17, block=False)
+            _wait(0.52)
+
+        phrases = [
+            _rising_scan, _falling_scan, _double_sweep,
+            _data_burst, _scale_run, _wobble_pulse,
+            _stutter_burst, _ping_echo, _fm_warble,
         ]
+        weights = [4, 3, 3, 4, 3, 2, 3, 2, 2]
+
         while not stop_event.is_set():
-            for kind, f0, f1, dur, vol, gap in pattern:
-                if stop_event.is_set():
-                    return
-                if kind == "chirp":
-                    chirp_nb(f0, f1, dur, vol)
-                # break the pause into 50ms slices so stop is responsive
-                end = time.time() + (dur if kind == "chirp" else gap)
-                while time.time() < end:
-                    if stop_event.is_set():
-                        return
-                    time.sleep(min(0.05, end - time.time()))
+            rng.choices(phrases, weights=weights, k=1)[0]()
+            if stop_event.is_set():
+                return
+            if not _wait(rng.uniform(0.55, 1.20)):
+                return
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()

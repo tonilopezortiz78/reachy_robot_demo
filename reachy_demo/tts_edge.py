@@ -35,7 +35,7 @@ VOICE = "en-US-AvaMultilingualNeural"
 #        This is intentional. If it ever sounds too chipmunky, dial back toward +32Hz.
 #        NEVER set to 0.
 # Vol:   ffmpeg volume multiplier (1.0 = unity, 2.0 = +6 dB, 2.5 = +8 dB)
-RATE, PITCH, VOL = "+30%", "+52Hz", "2.5"
+RATE, PITCH, VOL = "+25%", "+48Hz", "2.5"
 
 # ── Persistent event loop ─────────────────────────────────────────────────────
 

@@ -41,6 +41,17 @@ NAMED_GESTURES = {
     "greeting":     "welcoming1",       # big wave
     "celebrate":    "enthusiastic1",    # celebration
     "proud":        "proud1",           # proud nod
+
+    # extra expressiveness
+    "amazed":       "amazed1",          # whoa!
+    "love":         "loving1",          # affectionate
+    "laugh":        "laughing1",        # genuine laugh
+    "oops":         "oops1",            # whoops / self-deprecating
+    "shy":          "shy1",             # bashful / cute
+    "surprised":    "surprised1",       # taken aback
+    "cheerful":     "cheerful1",        # upbeat enthusiasm
+    "success":      "success1",         # nailed it!
+    "relief":       "relief1",          # phew!
 }
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -219,6 +230,78 @@ class _AlivenessLayer:
         return p, y, r, by, al, ar
 
 
+# ── Thinking animation library ────────────────────────────────────────────────
+
+class _ThinkingAnimation:
+    """
+    Cycles through a curated library of contemplative poses with smooth
+    crossfades. Each pose is held for a random duration then blended into
+    a randomly chosen next pose (never the same one twice in a row).
+
+    Pose format: (p, y, r, by, al, ar, hold_min_s, hold_max_s)
+      p/y/r/by in radians, al/ar antenna positions in radians.
+    """
+    POSES = [
+        # name          p      y      r     by    al    ar  hold_range
+        # look up — classic "recalling" pose
+        ( 0.14,  0.08, -0.04,  0.04,  0.50, 0.15,  2.5, 4.0),
+        # tilt right — curious dog, pondering something to the right
+        ( 0.05,  0.18,  0.13,  0.08,  0.20, 0.58,  2.0, 3.5),
+        # tilt left — pondering left
+        ( 0.05, -0.16, -0.12, -0.07,  0.58, 0.20,  2.0, 3.5),
+        # slow scan right — eyes drifting as if following a thought
+        ( 0.09,  0.30,  0.03,  0.10,  0.28, 0.42,  1.8, 2.8),
+        # slow scan left
+        ( 0.09, -0.28,  0.02, -0.10,  0.42, 0.28,  1.8, 2.8),
+        # deep thought — head slightly bowed, antennas low, withdrawn
+        (-0.02,  0.04, -0.03,  0.03,  0.12, 0.12,  2.0, 3.5),
+        # perky alert — quick idea forming, antennas up
+        ( 0.13, -0.07,  0.07, -0.05,  0.68, 0.68,  1.5, 2.5),
+        # centre gaze — looking straight ahead but slightly upward
+        ( 0.10,  0.00,  0.04,  0.00,  0.40, 0.42,  1.5, 2.8),
+        # over-the-shoulder glance — body turns slightly
+        ( 0.07,  0.20,  0.08,  0.18,  0.35, 0.25,  1.8, 3.0),
+        # chin-up confident — like the robot just thought of something
+        ( 0.16, -0.05,  0.02, -0.03,  0.55, 0.55,  1.5, 2.5),
+    ]
+
+    BLEND_DUR = 1.0   # seconds to crossfade between poses
+
+    def __init__(self):
+        self._rng = random.Random()
+        self._poses     = [row[:6] for row in self.POSES]
+        self._hold_rngs = [(row[6], row[7]) for row in self.POSES]
+        n = len(self._poses)
+        self._cur  = self._rng.randrange(n)
+        self._nxt  = (self._cur + 1) % n
+        self._t         = 0.0
+        self._hold_end  = self._rng.uniform(*self._hold_rngs[self._cur])
+        self._blend_t   = None    # None = holding; float = blend start time
+
+    def update(self, dt: float) -> tuple:
+        self._t += dt
+
+        if self._blend_t is None:
+            if self._t >= self._hold_end:
+                self._blend_t = self._t
+                choices = [i for i in range(len(self._poses)) if i != self._cur]
+                self._nxt = self._rng.choice(choices)
+        else:
+            alpha = (self._t - self._blend_t) / self.BLEND_DUR
+            if alpha >= 1.0:
+                self._cur     = self._nxt
+                self._blend_t = None
+                self._hold_end = self._t + self._rng.uniform(*self._hold_rngs[self._cur])
+                alpha = 1.0
+            # smooth-step: 3t²−2t³
+            alpha = alpha * alpha * (3.0 - 2.0 * alpha)
+            c = self._poses[self._cur]
+            n = self._poses[self._nxt]
+            return tuple(c[i] + (n[i] - c[i]) * alpha for i in range(6))
+
+        return self._poses[self._cur]
+
+
 # ── Animator class ────────────────────────────────────────────────────────────
 
 class Animator:
@@ -236,6 +319,7 @@ class Animator:
         self.mirror    = mirror   # flip yaw/roll/body_yaw signs (viewer perspective)
         self._moves    = moves_library  # RecordedMoves HF library, optional
         self._gesture_active = False
+        self._thinking = _ThinkingAnimation()
         self._lock     = threading.Lock()
         self._stop     = threading.Event()
         self._t        = threading.Thread(target=self._loop, daemon=True)
@@ -312,31 +396,35 @@ class Animator:
                     ar =  0.20 + _s(0.15, 0.35, t, phase=1.2)
 
                 elif state == self.LISTENING:
-                    # head tilted, antennas perked with alternating flutter
-                    p  =  0.12 + _s(0.05, 0.40, t)
-                    y  =  _s(0.26, 0.35, t) + _s(0.09, 0.79, t)
-                    r  =  0.10 + _s(0.05, 0.29, t)
-                    by =  _s(0.18, 0.18, t) + _s(0.05, 0.43, t)
-                    al =  0.65 + _s(0.18, 0.50, t)
-                    ar =  0.35 + _s(0.18, 0.50, t, phase=math.pi)
+                    # Head tilted attentively, body leaning in, antennas perked + fluttering
+                    p  =  0.14 + _s(0.06, 0.30, t) + _s(0.02, 0.72, t)
+                    y  =  _s(0.26, 0.28, t) + _s(0.09, 0.67, t) + _s(0.03, 1.40, t)
+                    r  =  0.10 + _s(0.06, 0.22, t) + _s(0.02, 0.51, t)
+                    by =  _s(0.20, 0.15, t) + _s(0.06, 0.36, t)
+                    # Alternating flutter — one antenna chases the other
+                    al =  0.55 + _s(0.22, 0.55, t)
+                    ar =  0.40 + _s(0.22, 0.55, t, phase=math.pi * 0.8)
 
                 elif state == self.THINKING:
-                    # quick head nods + rapid antenna alternation (computing feel)
-                    p  = -0.05 + _s(0.07, 1.40, t) + _s(0.03, 2.30, t)
-                    y  =  _s(0.14, 0.90, t) + _s(0.06, 1.70, t)
-                    r  =  _s(0.06, 1.20, t) + _s(0.02, 2.10, t)
-                    by =  _s(0.10, 0.55, t)
-                    al =  0.45 + _s(0.30, 1.80, t)
-                    ar =  0.45 + _s(0.30, 1.80, t, phase=math.pi)
+                    # Pose library: drifts between 10 contemplative poses with smooth blends
+                    bp, by_, br, bby, bal, bar = self._thinking.update(dt)
+                    # Add small life micro-wobble on top so it never looks frozen
+                    p  = bp  + _s(0.025, 0.52, t)
+                    y  = by_ + _s(0.030, 0.44, t)
+                    r  = br  + _s(0.020, 0.60, t)
+                    by = bby + _s(0.012, 0.36, t)
+                    al = bal + _s(0.07, 1.25, t)
+                    ar = bar + _s(0.07, 1.25, t, phase=math.pi)
 
                 elif state == self.SPEAKING:
-                    # expressive talking — head bobs + antenna flutter (kept inside IK envelope)
-                    p  =  0.08 + _s(0.10, 0.50, t) + _s(0.04, 1.23, t)
-                    y  =  _s(0.22, 0.38, t) + _s(0.08, 0.87, t)
-                    r  =  _s(0.08, 0.27, t) + _s(0.03, 0.63, t)
-                    by =  _s(0.22, 0.22, t) + _s(0.07, 0.51, t)
-                    al =  0.30 + _s(0.30, 0.65, t)
-                    ar =  0.30 + _s(0.30, 0.65, t, phase=math.pi * 0.6)
+                    # Very expressive: 3-harmonic head bobs, body engagement, lively antennas
+                    p  =  0.10 + _s(0.12, 0.44, t) + _s(0.05, 1.18, t) + _s(0.02, 2.25, t)
+                    y  =  _s(0.24, 0.34, t) + _s(0.09, 0.80, t) + _s(0.03, 1.85, t)
+                    r  =  _s(0.09, 0.24, t) + _s(0.04, 0.57, t)
+                    by =  _s(0.24, 0.19, t) + _s(0.08, 0.46, t)
+                    # Excited antenna flutter — both move but out of phase for liveliness
+                    al =  0.32 + _s(0.32, 0.68, t) + _s(0.08, 1.75, t)
+                    ar =  0.32 + _s(0.32, 0.68, t, phase=math.pi * 0.65) + _s(0.08, 1.75, t, phase=math.pi)
 
                 else:
                     p = y = r = by = al = ar = 0.0

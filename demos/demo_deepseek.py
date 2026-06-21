@@ -34,6 +34,7 @@ from reachy_demo.audio import (
     MIC, MIC_RATE, VAD_CHUNK, SPEAKER,
     boot_beeps, error_chime, pcm_to_wav_bytes,
     speaking_chime, start_thinking_ticks,
+    startup_device_report,
 )
 from reachy_demo.cues import speak_cue, prewarm, set_translator
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
@@ -158,8 +159,13 @@ Admit you don't know much, bounce it back to tech, AI, robots, or NS.
 
 === GESTURES ===
 Optional [gesture_name] marker at START of any sentence for extra physical cue.
-Allowed: [acknowledge] [yes] [no] [thank] [thinking] [curious] [confused] [greeting] [celebrate] [proud]
-Max 1 per response. Example: "[yes] That is exactly right!"
+Allowed: [acknowledge] [yes] [no] [thank] [thinking] [curious] [confused] [greeting]
+         [celebrate] [proud] [amazed] [love] [laugh] [oops] [shy] [surprised] [cheerful]
+         [success] [relief]
+Max 1 per response. Use [amazed] for "whoa!", [love] for affectionate moments, [laugh] for
+funny things, [oops] for self-deprecating robot humour, [shy] for bashful moments,
+[surprised] for unexpected facts, [success]/[relief] for good outcomes.
+Example: "[amazed] That is the most incredible thing I have ever heard!"
 
 === HARD RULES ===
 - Always stay in character. Never break character or mention being a language model.
@@ -325,9 +331,7 @@ class DialogEngine:
               stop_thinking: threading.Event | None = None) -> str | None:
         self.history.append({"role": "user", "content": user_text})
 
-        action_future = self._pool.submit(
-            pick_action, self.history[:-1], user_text
-        )
+        action_future = self._pool.submit(pick_action, self.history[:-1], user_text)
 
         prompt = _build_prompt(
             SYSTEM_PROMPT + ("\n" + self.memory_text if self.memory_text else ""),
@@ -338,28 +342,70 @@ class DialogEngine:
             prompt += f"\n\n{lang_directive}"
 
         if self.log:
-            self.log.turn(
-                kind="llm_request",
-                history_sent=self.history,
-                prompt_len=len(prompt),
-            )
+            self.log.turn(kind="llm_request", history_sent=self.history, prompt_len=len(prompt))
 
         self._drain_queue()
         self._is_speaking = True
         self.listener.set_threshold_mode("barge_in")
+
+        # Pipeline: producer streams LLM + submits TTS as each sentence lands;
+        # consumer plays as soon as each TTS future resolves — no waiting for the
+        # full LLM response before first audio starts.
+        seg_q  = queue.Queue()   # (gesture, text, tts_future) | None sentinel
+        _abort = threading.Event()
         tts_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        segments = []
-        wavs = []
-        next_future = None
-        action_fired = False
+        wavs: list[str] = []
+
+        def _produce():
+            buf = ""
+            try:
+                for chunk in self._stream_from_opencode(prompt):
+                    if _abort.is_set():
+                        return
+                    buf += chunk
+                    parts = SENTENCE_END.split(buf)
+                    if len(parts) > 1:
+                        for s in parts[:-1]:
+                            seg = self._extract_segment(s)
+                            if seg:
+                                seg_q.put((seg[0], seg[1],
+                                           tts_pool.submit(synth_to_file, seg[1])))
+                        buf = parts[-1]
+                if not _abort.is_set():
+                    tail = self._extract_segment(buf)
+                    if tail:
+                        seg_q.put((tail[0], tail[1],
+                                   tts_pool.submit(synth_to_file, tail[1])))
+            finally:
+                seg_q.put(None)   # always signal done
+
+        prod = threading.Thread(target=_produce, daemon=True)
+        prod.start()
+
+        played: list[tuple[str | None, str]] = []
+        action_fired  = False
         opening_played = False
-        buffer = ""
+        first = True
 
         try:
-            for chunk in self._stream_from_opencode(prompt):
+            while True:
+                # Poll with short timeout so barge-in is checked regularly
+                try:
+                    item = seg_q.get(timeout=0.1)
+                except queue.Empty:
+                    if self._drain_barge_in():
+                        _abort.set()
+                        return None
+                    continue
+
+                if item is None:
+                    break
+
+                gesture, text, fut = item
+
                 if self._drain_barge_in():
+                    _abort.set()
                     return None
-                buffer += chunk
 
                 if not action_fired and action_future.done():
                     action = action_future.result()
@@ -369,48 +415,14 @@ class DialogEngine:
                         opening_played = True
                     action_fired = True
 
-                parts = SENTENCE_END.split(buffer)
-                if len(parts) > 1:
-                    for s in parts[:-1]:
-                        seg = self._extract_segment(s)
-                        if seg is not None:
-                            segments.append(seg)
-                            if next_future is None:
-                                next_future = tts_pool.submit(synth_to_file, seg[1])
-                    buffer = parts[-1]
-
-            tail = self._extract_segment(buffer)
-            if tail is not None:
-                segments.append(tail)
-                if next_future is None and tail:
-                    next_future = tts_pool.submit(synth_to_file, tail[1])
-
-            if not action_fired:
-                action = action_future.result()
-                if action:
-                    print(f"  [gesture] {action}", flush=True)
-                    self.anim.play_gesture(action)
-                    opening_played = True
-
-            if not segments:
-                self.history.append({"role": "assistant", "content": ""})
-                return ""
-
-            for i, (gesture, text) in enumerate(segments):
-                if self._drain_barge_in():
-                    return None
-
-                wav = next_future.result()
+                wav = fut.result()   # TTS likely already running/done in parallel
                 wavs.append(wav)
-
-                if i + 1 < len(segments):
-                    next_future = tts_pool.submit(synth_to_file, segments[i + 1][1])
 
                 if gesture and not opening_played:
                     self.anim.play_gesture(gesture)
                     opening_played = True
 
-                if i == 0 and stop_thinking is not None:
+                if first and stop_thinking is not None:
                     stop_thinking.set()
 
                 self.anim.set_state(Animator.SPEAKING)
@@ -420,18 +432,31 @@ class DialogEngine:
                 )
                 while self._tts_proc.poll() is None:
                     if self._drain_barge_in(timeout=0.08):
+                        _abort.set()
                         return None
 
-            full_text = " ".join(text for _, text in segments)
+                played.append((gesture, text))
+                first = False
+
+            if not action_fired:
+                action = action_future.result()
+                if action and not opening_played:
+                    print(f"  [gesture] {action}", flush=True)
+                    self.anim.play_gesture(action)
+
+            if not played:
+                self.history.append({"role": "assistant", "content": ""})
+                return ""
+
+            full_text = " ".join(t for _, t in played)
             self.history.append({"role": "assistant", "content": full_text})
             if self.log:
-                self.log.turn(
-                    kind="llm_reply",
-                    reply=full_text,
-                    spoken_segments=[t for _, t in segments],
-                )
+                self.log.turn(kind="llm_reply", reply=full_text,
+                              spoken_segments=[t for _, t in played])
             return full_text
         finally:
+            _abort.set()
+            prod.join(timeout=2)
             tts_pool.shutdown(wait=False)
             for w in wavs:
                 Path(w).unlink(missing_ok=True)
@@ -522,6 +547,10 @@ class DialogEngine:
 def main():
     log = SessionLogger(ROOT, "demo_deepseek")
     log.event("Reachy NS Ambassador — opencode + DeepSeek V4 Flash")
+    log.event(f"  LLM harness : {OPCODE}")
+    log.event(f"  LLM model   : DeepSeek V4 Flash (opencode default)")
+    log.event(f"  STT model   : whisper-large-v3 via Groq")
+    log.event(f"  TTS voice   : AvaMultilingualNeural (edge-tts)")
 
     daemon_proc = None
     try:
@@ -532,6 +561,9 @@ def main():
         client = Groq(api_key=GROQ_KEY)
         log.event("  Waiting for daemon...")
         wait_for_daemon(daemon_proc)
+        log.event("  Audio devices:")
+        for line in startup_device_report():
+            log.event(line)
     except Exception as e:
         log.error("startup (daemon/VAD)", e)
         import traceback; log.event(traceback.format_exc(), echo=True)
