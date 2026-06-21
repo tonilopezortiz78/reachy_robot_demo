@@ -54,10 +54,12 @@ class SessionLogger:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         data_root = Path(root) / "data"
         self.dir = _next_interaction_dir(data_root)
-        _prune_old_sessions(data_root, keep=keep_sessions)
         self.number = self.dir.name
         self.audio_dir = self.dir / "audio"
+        # Create the new session dir BEFORE pruning, then keep the N most recent.
+        # (Pruning before creation would always leave N old + 1 new = N+1 dirs.)
         self.audio_dir.mkdir(parents=True, exist_ok=True)
+        _prune_old_sessions(data_root, keep=keep_sessions)
         self.jsonl_path = self.dir / "transcript.jsonl"
         self.console_path = self.dir / "console.log"
         self._turn = 0
@@ -85,6 +87,19 @@ class SessionLogger:
             wf.setframerate(rate)
             wf.writeframes(pcm)
         return str(path)
+
+    # ── Save a played TTS reply wav so the session is fully replayable ────────
+    def save_reply_wav(self, src_path: str, seg: int = 1) -> str | None:
+        """Copy a played TTS wav into audio/reply_NNN_S.wav (NNN = current turn,
+        S = segment index). Lets you replay BOTH sides of the conversation —
+        what the mic heard (turn_NNN.wav) and what Reachy said (reply_NNN_S.wav).
+        Best-effort: returns the new path, or None if the copy failed."""
+        try:
+            dst = self.audio_dir / f"reply_{self._turn:03d}_{seg}.wav"
+            shutil.copyfile(src_path, dst)
+            return str(dst)
+        except Exception:
+            return None
 
     # ── Structured per-turn record ───────────────────────────────────────────
     def turn(self, **fields):

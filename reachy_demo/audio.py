@@ -40,34 +40,90 @@ SPEAKER = "plughw:CARD=Audio,DEV=0"
 # (Note: this contradicts older notes that said the Audio device is playback-only.
 #  Trust the measurement — the Pollen Audio device carries the working mic here.)
 #
-# Source names contain a per-unit serial, so we auto-detect at import. To inspect:
+# Source names contain a per-unit serial, so we auto-detect at import. We match
+# on the SUBSTRING "Reachy_Mini_Audio" (not the full name), so a different unit's
+# serial — or a PipeWire profile/port change — never breaks detection. To inspect:
 #     pactl list short sources
 _LAPTOP_MIC_FALLBACK = "alsa_input.pci-0000_00_1f.3.analog-stereo"
 
 # Preference order: robot Audio mic (works) → robot Camera mic → laptop fallback.
 _MIC_PREFERENCE = ("Reachy_Mini_Audio", "Reachy_Mini_Camera")
 
+# How long to wait, at import, for the robot mic to appear in PipeWire. This is
+# the heart of the "robot forgot the mic" fix: if the cable was just plugged in,
+# PipeWire was restarted, or the source is still settling, the robot mic may not
+# be enumerated for a second or two. Without this wait we'd silently fall back to
+# the laptop mic for the WHOLE session. Polling until it shows up makes detection
+# survive any audio-config change on the machine.
+_MIC_DETECT_WAIT_S = 8.0
 
-def _detect_robot_mic(default: str) -> str:
-    """Return the PipeWire source name of the robot's working mic, else `default`."""
+
+def _list_input_sources() -> list[str]:
+    """Current non-monitor alsa_input source names, or [] if pactl fails."""
     try:
         out = subprocess.run(
             ["pactl", "list", "short", "sources"],
             capture_output=True, text=True, timeout=3,
         ).stdout
-        sources = [ln.split("\t")[1] for ln in out.splitlines()
-                   if len(ln.split("\t")) >= 2 and ln.split("\t")[1].startswith("alsa_input")
-                   and ".monitor" not in ln.split("\t")[1]]
+    except Exception:
+        return []
+    names = []
+    for ln in out.splitlines():
+        cols = ln.split("\t")
+        if len(cols) >= 2 and cols[1].startswith("alsa_input") and ".monitor" not in cols[1]:
+            names.append(cols[1])
+    return names
+
+
+def _unsuspend(source: str) -> None:
+    """Ask PipeWire to wake a suspended source so the first capture isn't dropped.
+    Best-effort: silently ignored if pactl/the source can't be woken."""
+    try:
+        subprocess.run(["pactl", "suspend-source", source, "0"],
+                       capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+
+def _detect_robot_mic(default: str, wait_s: float = _MIC_DETECT_WAIT_S) -> str:
+    """Return the PipeWire source name of the robot's working mic, else `default`.
+
+    Polls the source list for up to `wait_s` seconds so a mic that PipeWire
+    hasn't enumerated yet (just plugged in / PipeWire restarting / suspended)
+    is still found instead of silently falling back to the laptop mic. The
+    chosen source is un-suspended before returning so the first capture works.
+    """
+    deadline = time.time() + max(0.0, wait_s)
+    first_pass = True
+    while True:
+        sources = _list_input_sources()
         for want in _MIC_PREFERENCE:
             for name in sources:
                 if want in name:
+                    _unsuspend(name)
                     return name
-    except Exception:
-        pass
+        if time.time() >= deadline:
+            break
+        # Wait a beat and re-poll — the robot mic may still be appearing.
+        time.sleep(0.5)
+        first_pass = False
     return default
 
 
-MIC = _detect_robot_mic(_LAPTOP_MIC_FALLBACK)   # robot voice mic, auto-detected
+def redetect_mic() -> str:
+    """Re-run mic detection at runtime and update the module-level MIC.
+
+    Call this if the audio config changed mid-session (e.g. the cable was
+    replugged) and capture stopped working. Returns the (possibly new) MIC.
+    Note: code that imported MIC by value won't see the change — read
+    audio.MIC, or pass the returned value explicitly.
+    """
+    global MIC
+    MIC = _detect_robot_mic(_LAPTOP_MIC_FALLBACK)
+    return MIC
+
+
+MIC = _detect_robot_mic(_LAPTOP_MIC_FALLBACK)   # robot voice mic, auto-detected (waits for it)
 
 
 def startup_device_report() -> list[str]:
