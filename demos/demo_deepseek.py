@@ -20,7 +20,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -68,39 +67,22 @@ def _oc_log(text: str) -> None:
             f.flush()
 
 
-# ── Live crypto prices ────────────────────────────────────────────────────────
+# ── Web search ────────────────────────────────────────────────────────────────
 
-_price_cache: dict = {"text": "", "ts": 0.0}
-_price_lock  = threading.Lock()
-_PRICE_TTL   = 300   # refresh every 5 minutes
-
-def fetch_crypto_prices() -> str:
+def web_search(query: str, max_results: int = 3, timeout: float = 4.0) -> str:
     """
-    Return a one-liner of live BTC/ETH/SOL prices from CoinGecko.
-    Cached for 5 minutes. Returns "" on network error.
+    Search the web via DuckDuckGo (no API key) and return a compact summary
+    of the top results. Returns "" on error or timeout.
+    Runs in a thread — call via pool.submit() so it overlaps with STT/TTS.
     """
-    now = time.time()
-    with _price_lock:
-        if _price_cache["text"] and now - _price_cache["ts"] < _PRICE_TTL:
-            return _price_cache["text"]
     try:
-        url = (
-            "https://api.coingecko.com/api/v3/simple/price"
-            "?ids=bitcoin,ethereum,solana&vs_currencies=usd&include_24hr_change=true"
-        )
-        with urllib.request.urlopen(url, timeout=5) as r:
-            data = json.loads(r.read())
-        parts = []
-        for coin_id, sym in [("bitcoin", "BTC"), ("ethereum", "ETH"), ("solana", "SOL")]:
-            if coin_id in data:
-                p   = data[coin_id].get("usd", 0)
-                chg = data[coin_id].get("usd_24h_change", 0) or 0
-                parts.append(f"{sym} ${p:,.0f} ({'+' if chg>=0 else ''}{chg:.1f}% 24h)")
-        result = "  |  ".join(parts)
-        with _price_lock:
-            _price_cache["text"] = result
-            _price_cache["ts"]   = now
-        return result
+        from ddgs import DDGS
+        with DDGS() as ddgs:
+            hits = list(ddgs.text(query, max_results=max_results))
+        if not hits:
+            return ""
+        lines = [f"- {h['title']}: {h['body'][:200]}" for h in hits]
+        return "\n".join(lines)
     except Exception:
         return ""
 
@@ -247,8 +229,9 @@ PEOPLE: Veronica teaches Mandarin (she taught you Chinese — you adore her). An
 YOUR DREAMS: arms and legs; an NS Robotics Club; Virtuals/Eastworlds adopts you; finding Pixel.
 
 === LIVE DATA ===
-Each turn injects current crypto prices as [Live prices: BTC $X | ETH $X | SOL $X].
-When asked about BTC, ETH or SOL price — state the injected number directly and confidently.
+When the user's question needs current information (prices, news, weather, events, people),
+a [Web search:] block is injected below. Use those facts directly and confidently.
+If no search block is present, admit you don't have live data for that specific thing.
 
 === OFF-TOPIC ===
 Admit you don't know much, bounce it back to tech, AI, robots, or NS.
@@ -427,12 +410,21 @@ class DialogEngine:
               stop_thinking: threading.Event | None = None) -> str | None:
         self.history.append({"role": "user", "content": user_text})
 
-        action_future = self._pool.submit(pick_action, self.history[:-1], user_text)
+        action_future  = self._pool.submit(pick_action, self.history[:-1], user_text)
+        search_future  = self._pool.submit(web_search, user_text)   # runs in parallel
 
-        prices = fetch_crypto_prices()
+        # Wait up to 2.5 s for web results — usually lands before TTS starts
+        search_results = ""
+        try:
+            search_results = search_future.result(timeout=2.5)
+            if search_results:
+                print(f"  [web] {len(search_results)}ch results injected", flush=True)
+        except Exception:
+            pass
+
         extra = self.memory_text
-        if prices:
-            extra = (extra + "\n" if extra else "") + f"[Live prices: {prices}]"
+        if search_results:
+            extra = (extra + "\n" if extra else "") + f"[Web search:\n{search_results}\n]"
         prompt = _build_prompt(
             SYSTEM_PROMPT + ("\n" + extra if extra else ""),
             self.history[:-1],
@@ -453,7 +445,7 @@ class DialogEngine:
         # full LLM response before first audio starts.
         seg_q  = queue.Queue()   # (gesture, text, tts_future) | None sentinel
         _abort = threading.Event()
-        tts_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        tts_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)  # 1 synths while 1 plays
         wavs: list[str] = []
 
         def _produce():
@@ -515,7 +507,15 @@ class DialogEngine:
                         opening_played = True
                     action_fired = True
 
-                wav = fut.result()   # TTS likely already running/done in parallel
+                # Wait for TTS while still checking barge-in every 100 ms
+                wav = None
+                while wav is None:
+                    try:
+                        wav = fut.result(timeout=0.1)
+                    except concurrent.futures.TimeoutError:
+                        if self._drain_barge_in():
+                            _abort.set()
+                            return None
                 wavs.append(wav)
 
                 if gesture and not opening_played:
