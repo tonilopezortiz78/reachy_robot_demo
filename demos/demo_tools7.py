@@ -706,9 +706,10 @@ def main():
             log.event("\n  Listening continuously. Ctrl-C to stop.\n")
 
             try:
-                # Tick thread + stop event, refreshed each turn. Held at this
-                # scope so the outer finally can kill + join them on Ctrl-C.
-                stop_thinking = threading.Event()
+                # stop_thinking is created fresh each turn (in the loop below).
+                # A new object each turn avoids the race where tick_thread_N
+                # sees .clear() from Turn N+1 and re-awakens alongside tick_thread_N+1.
+                stop_thinking = threading.Event()   # placeholder; replaced each turn
                 tick_thread = None
                 last_repeat = 0.0   # last time we asked "could you repeat?" (cooldown)
 
@@ -745,9 +746,10 @@ def main():
 
                         # Soft "processing" tick loop — keeps the robot feeling
                         # alive while Whisper + LLM work. Killed the moment the
-                        # first TTS segment is about to play (or on error), so
-                        # the beep never overlaps the spoken reply.
-                        stop_thinking.clear()
+                        # first TTS segment is about to play (or on error).
+                        # Fresh Event each turn: guarantees no cross-turn bleed
+                        # where old tick thread re-wakes after .clear() is called.
+                        stop_thinking = threading.Event()
                         tick_thread = start_thinking_ticks(stop_thinking)
 
                         # Save the EXACT audio Whisper will hear (replayable WAV)

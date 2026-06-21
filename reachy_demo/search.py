@@ -14,8 +14,11 @@ import re
 
 _SEARCH_FILLER = re.compile(
     r'\b(can you|could you|please|tell me|do you know|i want to know|'
-    r'what is|what are|what was|how much is|how much are|'
-    r'give me|show me|let me know)\b',
+    r'what is|what are|what was|what\'s|'
+    r'which is|which are|which was|'
+    r'where is|where are|where can i find|'
+    r'how much is|how much are|how much does|how\'s|'
+    r'give me|show me|let me know|i need to know)\b',
     re.IGNORECASE,
 )
 

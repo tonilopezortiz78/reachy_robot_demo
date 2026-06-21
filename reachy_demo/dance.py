@@ -25,7 +25,7 @@ ROOT = Path(__file__).parent.parent
 # ── Trigger keywords (multilingual) ──────────────────────────────────────────
 
 DANCE_KEYWORDS = {
-    "dance", "dancing", "groove", "boogie", "moves", "move it", "macarena",
+    "dance", "dancing", "groove", "boogie", "moves", "move", "move it", "macarena",
     "bailar", "baila", "baile", "bailemos", "bailas",                  # Spanish
     "danser", "danse", "dansez",                                        # French
     "tanzen", "tanz",                                                   # German
