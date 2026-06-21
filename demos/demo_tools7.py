@@ -1034,7 +1034,19 @@ def main():
 
                         # ANY dance request → full Macarena show with music
                         if is_dance and reply is not None:
-                            do_macarena(mini, dances, emotions, anim, log)
+                            # Mute mic during dance: music bleed fills the VAD
+                            # queue with false events that look like speech.
+                            listener.mute()
+                            try:
+                                do_macarena(mini, dances, emotions, anim, log)
+                            finally:
+                                listener.unmute()
+                                # Drain any stale events accumulated during music
+                                while not events.empty():
+                                    try:
+                                        events.get_nowait()
+                                    except queue.Empty:
+                                        break
                             anim.set_state(Animator.LISTENING)
 
                         anim.set_state(Animator.LISTENING)

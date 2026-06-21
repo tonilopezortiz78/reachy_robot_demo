@@ -155,20 +155,27 @@ def speak_cue(listener, kind: str, lang: str):
     Play a turn-taking cue SAFELY and block until it finishes.
 
     Two protections, both required on this hardware:
-      1. Mute the listener first — the robot speaker and mic are the same USB
-         device, so without muting the robot hears its own cue and treats it as
-         a user turn (phantom self-conversation).
+      1. Mute the listener only during PLAYBACK (not synthesis) — the robot
+         speaker and mic are the same USB device, so muting prevents the robot
+         hearing its own cue as a user turn. We synthesise the WAV BEFORE muting
+         so the listener isn't silenced for 2-3 s on first-use synthesis; it only
+         misses the ~0.5-1 s of actual audio playback.
       2. Play to completion — the speaker (plughw:CARD=Audio) is exclusive; if a
          cue overlaps the reply TTS or another cue, one is silently dropped
          ("device busy"). Blocking serialises speaker access.
 
     `listener` may be None (e.g. before it exists) — then we just play the cue.
     """
+    # Synthesise first (possibly 2-3 s on first use) WITHOUT muting
+    wav = cue_wav(kind, lang)
     if listener is not None:
         listener.mute()
     try:
-        proc = play_cue(kind, lang)
-        if proc is not None:
+        if wav:
+            proc = subprocess.Popen(
+                ["aplay", "-D", SPEAKER, "-q", wav],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
             proc.wait()
     finally:
         if listener is not None:
