@@ -274,11 +274,13 @@ DANCE_KEYWORDS = {
 
 DANCE_PICKS = [
     "groovy_sway_and_roll",
-    "macarena_intro",
     "polyrhythm_combo",
-    "enthusiastic2",
+    "chicken_peck",
+    "dizzy_spin",
+    "jackson_square",
+    "interwoven_spirals",
+    "head_tilt_roll",
     "chin_lead",
-    "jump",
 ]
 
 
@@ -435,8 +437,9 @@ class DialogEngine:
         except Exception as e:
             print(f"  [memory] {e}", flush=True)
 
+    MAX_SEGMENTS = 2   # hard cap: LLM often ignores the "2 sentences" rule
+
     def speak(self, user_text: str, lang_directive: str | None = None,
-              stop_thinking: threading.Event | None = None,
               search_future: "concurrent.futures.Future | None" = None) -> str | None:
         self.history.append({"role": "user", "content": user_text})
 
@@ -482,20 +485,24 @@ class DialogEngine:
 
         def _produce():
             buf = ""
+            n = 0   # segment count — hard cap at MAX_SEGMENTS
             try:
                 for chunk in self._stream_from_opencode(prompt):
-                    if _abort.is_set():
+                    if _abort.is_set() or n >= self.MAX_SEGMENTS:
                         return
                     buf += chunk
                     parts = SENTENCE_END.split(buf)
                     if len(parts) > 1:
                         for s in parts[:-1]:
+                            if n >= self.MAX_SEGMENTS:
+                                break
                             seg = self._extract_segment(s)
                             if seg:
                                 seg_q.put((seg[0], seg[1],
                                            tts_pool.submit(synth_to_file, seg[1])))
+                                n += 1
                         buf = parts[-1]
-                if not _abort.is_set():
+                if not _abort.is_set() and n < self.MAX_SEGMENTS:
                     tail = self._extract_segment(buf)
                     if tail:
                         seg_q.put((tail[0], tail[1],
@@ -553,9 +560,6 @@ class DialogEngine:
                 if gesture and not opening_played:
                     self.anim.play_gesture(gesture)
                     opening_played = True
-
-                if first and stop_thinking is not None:
-                    stop_thinking.set()
 
                 self.anim.set_state(Animator.SPEAKING)
                 self._tts_proc = subprocess.Popen(
@@ -850,6 +854,11 @@ def main():
                         lang_known = True
                         prewarm(current_lang)
 
+                        # Stop thinking sounds NOW — gives any in-flight non-blocking
+                        # ffmpeg tick processes (~0.5s max) time to release the alsa
+                        # device before the first TTS aplay call (~1-4s from here).
+                        stop_thinking.set()
+
                         # Submit web search immediately after STT so it runs in parallel
                         # with speak()'s setup and action-picker call (not a serial wait).
                         search_future = pool.submit(web_search, text)
@@ -862,7 +871,6 @@ def main():
                         t0 = time.time()
                         try:
                             reply = engine.speak(text, lang_directive=directive,
-                                                 stop_thinking=stop_thinking,
                                                  search_future=search_future)
                         except Exception as e:
                             log.error("llm/tts", e)
