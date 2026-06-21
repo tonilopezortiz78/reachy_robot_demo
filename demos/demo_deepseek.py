@@ -30,6 +30,7 @@ from silero_vad import load_silero_vad, VADIterator
 
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
+from reachy_mini.utils import create_head_pose
 
 from reachy_demo.animator import Animator, NAMED_GESTURES
 from reachy_demo.audio import (
@@ -278,8 +279,8 @@ Example: "[amazed] That is the most incredible thing I have ever heard!"
 
 # Multilingual dance keywords — any of these triggers a physical dance after speaking
 DANCE_KEYWORDS = {
-    "dance", "dancing", "groove", "boogie", "moves", "move it",
-    "bailar", "baila", "baile", "bailemos", "bailas",            # Spanish
+    "dance", "dancing", "groove", "boogie", "moves", "move it", "macarena",
+    "bailar", "baila", "baile", "bailemos", "bailas", "macarena",# Spanish
     "danser", "danse", "dansez",                                  # French
     "tanzen", "tanz",                                             # German
     "ballare", "balla", "ballo",                                  # Italian
@@ -300,6 +301,144 @@ DANCE_PICKS = [
     "head_tilt_roll",
     "chin_lead",
 ]
+
+# ── Macarena beat-sync dance (ported from demo_dance.py) ─────────────────────
+
+MUSIC_PATH = ROOT / "music" / "macarena.mp3"
+_BEAT = 0.5805   # 103.4 BPM, pre-analysed
+
+# 8-pose Macarena arm-sequence — one pose per beat
+_MACARENA_POSES = [
+    ( 0.08, -0.42,  0.10,   0.55, [ 0.10, -0.72]),
+    ( 0.15, -0.52,  0.14,   0.80, [ 0.05, -0.85]),
+    ( 0.08,  0.42, -0.10,  -0.55, [ 0.72, -0.10]),
+    ( 0.15,  0.52, -0.14,  -0.80, [ 0.85, -0.05]),
+    ( 0.04, -0.20,  0.30,   1.00, [ 0.60, -0.60]),
+    ( 0.04,  0.20, -0.30,  -1.00, [-0.60,  0.60]),
+    (-0.22,  0.05,  0.14,   1.30, [ 0.80,  0.80]),
+    (-0.14,  0.05, -0.14,  -1.40, [ 0.80,  0.80]),
+]
+
+
+def _mac_clamp(v, lim):
+    return max(-lim, min(lim, v))
+
+
+def _mac_beat(mini, pose, scale, target_t):
+    p, y, r, by, ants = pose
+    now = time.time()
+    dur = max(0.12, target_t - now - 0.04)
+    mini.goto_target(
+        head=create_head_pose(
+            pitch=_mac_clamp(p * scale, 0.36),
+            yaw=_mac_clamp(y * scale, 1.50),
+            roll=_mac_clamp(r * scale, 0.36),
+            degrees=False,
+        ),
+        antennas=[_mac_clamp(ants[0] * scale, 0.80),
+                  _mac_clamp(ants[1] * scale, 0.80)],
+        body_yaw=_mac_clamp(by * scale, 1.40),
+        duration=dur,
+    )
+    rem = target_t - time.time()
+    if rem > 0:
+        time.sleep(rem)
+
+
+def _mac_spin(mini, angle, dur=0.42):
+    mini.goto_target(
+        head=create_head_pose(), antennas=[0.0, 0.0],
+        body_yaw=angle, duration=dur,
+    )
+    time.sleep(dur + 0.05)
+
+
+def _mac_spin360(mini):
+    mini.goto_target(head=create_head_pose(pitch=0.10, degrees=False),
+                     antennas=[0.80, -0.80], body_yaw=2.79, duration=0.22)
+    time.sleep(0.02)
+    mini.goto_target(head=create_head_pose(pitch=0.10, degrees=False),
+                     antennas=[-0.80, 0.80], body_yaw=-2.79, duration=0.18)
+    time.sleep(0.02)
+    mini.goto_target(head=create_head_pose(pitch=0.25, degrees=False),
+                     antennas=[0.80, 0.80], body_yaw=0.0, duration=0.28)
+    time.sleep(0.10)
+
+
+def do_macarena(mini, dances, emotions, anim, log=None):
+    """
+    Play ~18 s of beat-synced Macarena: music + 3 escalating cycles + climax.
+    Pauses the Animator so the beat-sync goto_target calls have sole control.
+    """
+    import math as _math
+    if log:
+        log.event("  [dance] Macarena starting!")
+    anim.pause()
+    try:
+        music_proc = subprocess.Popen(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-stream_loop", "-1", "-i", str(MUSIC_PATH),
+             "-af", "volume=2.0", "-f", "alsa", SPEAKER],
+        )
+        music_t0 = time.time()
+
+        # Entry spins
+        _mac_spin(mini,  1.4, dur=0.35)
+        _mac_spin(mini, -1.4, dur=0.35)
+        _mac_spin(mini,  0.0, dur=0.28)
+
+        # Snap to next clean beat boundary
+        elapsed  = time.time() - music_t0
+        beat_idx = _math.ceil(elapsed / _BEAT)
+        wait_snap = music_t0 + beat_idx * _BEAT - time.time()
+        if wait_snap > 0:
+            time.sleep(wait_snap)
+
+        # 3 escalating Macarena cycles (scale 1.0 → 1.3 → 1.6)
+        for cycle in range(3):
+            scale = 1.0 + cycle * 0.30
+            for i, pose in enumerate(_MACARENA_POSES):
+                beat_num = beat_idx + cycle * len(_MACARENA_POSES) + i
+                _mac_beat(mini, pose, scale, music_t0 + beat_num * _BEAT)
+            if cycle == 1:
+                mini.goto_target(
+                    head=create_head_pose(pitch=-0.38, degrees=False),
+                    antennas=[-0.50, -0.50], body_yaw=0.0, duration=0.50)
+                time.sleep(0.02)
+                mini.goto_target(
+                    head=create_head_pose(pitch=0.40, degrees=False),
+                    antennas=[0.90, 0.90], body_yaw=0.0, duration=0.07)
+                time.sleep(0.12)
+                mini.play_move(dances.get("groovy_sway_and_roll"),
+                               play_frequency=80.0, sound=False)
+            elif cycle == 2:
+                mini.goto_target(
+                    head=create_head_pose(pitch=-0.38, degrees=False),
+                    antennas=[-0.50, -0.50], body_yaw=0.0, duration=0.50)
+                time.sleep(0.02)
+                mini.goto_target(
+                    head=create_head_pose(pitch=0.40, degrees=False),
+                    antennas=[0.90, 0.90], body_yaw=0.0, duration=0.07)
+                time.sleep(0.12)
+
+        # Climax
+        _mac_spin360(mini)
+        mini.play_move(dances.get("dizzy_spin"),       play_frequency=80.0, sound=False)
+        _mac_spin360(mini)
+        mini.play_move(dances.get("polyrhythm_combo"), play_frequency=80.0, sound=False)
+        _mac_spin360(mini)
+        mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
+
+    finally:
+        music_proc.terminate()
+        music_proc.wait()
+        # Return to neutral
+        mini.goto_target(
+            head=create_head_pose(), antennas=[0.0, 0.0],
+            body_yaw=0.0, duration=0.8,
+        )
+        time.sleep(0.9)
+        anim.resume()
 
 
 class ContinuousListener:
@@ -901,16 +1040,20 @@ def main():
                         # Perform the actual dance after speaking
                         if is_dance and reply is not None:
                             import random as _random
-                            pick = _random.choice(DANCE_PICKS)
-                            log.event(f"  [dance] playing: {pick}")
-                            try:
-                                move = dances.get(pick)
-                                anim.set_state(Animator.SPEAKING)
-                                mini.play_move(move, play_frequency=80.0, sound=False)
-                            except Exception as e:
-                                log.event(f"  [dance] error: {e}")
-                            finally:
-                                anim.set_state(Animator.LISTENING)
+                            if "macarena" in text.lower():
+                                do_macarena(mini, dances, emotions, anim, log)
+                            else:
+                                pick = _random.choice(DANCE_PICKS)
+                                log.event(f"  [dance] playing: {pick}")
+                                try:
+                                    anim.pause()
+                                    mini.play_move(dances.get(pick),
+                                                   play_frequency=80.0, sound=False)
+                                except Exception as e:
+                                    log.event(f"  [dance] error: {e}")
+                                finally:
+                                    anim.resume()
+                            anim.set_state(Animator.LISTENING)
 
                         total_dt = time.time() - t0
                         if reply is None:

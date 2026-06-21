@@ -322,12 +322,21 @@ class Animator:
         self._thinking = _ThinkingAnimation()
         self._lock     = threading.Lock()
         self._stop     = threading.Event()
+        self._paused   = threading.Event()
         self._t        = threading.Thread(target=self._loop, daemon=True)
         self._t.start()
 
     def set_state(self, state):
         with self._lock:
             self.state = state
+
+    def pause(self):
+        """Pause the animation loop — hand full servo control to caller."""
+        self._paused.set()
+
+    def resume(self):
+        """Resume the animation loop after pause()."""
+        self._paused.clear()
 
     def stop(self):
         self._stop.set()
@@ -377,6 +386,9 @@ class Animator:
         consecutive_errors = 0
         aliveness = _AlivenessLayer() if self.aliveness else None
         while not self._stop.is_set():
+            if self._paused.is_set():
+                time.sleep(0.05)
+                continue
             with self._lock:
                 state = self.state
             # During a play_gesture() call, suppress base + aliveness so the
