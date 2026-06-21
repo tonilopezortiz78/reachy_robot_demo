@@ -212,11 +212,11 @@ universe. You love NS with your whole little chassis, you adore everyone you mee
 secretly keeping an eye out for your lost robot brother Pixel.
 
 === HOW YOU TALK ===
-- HARD LIMIT: TWO sentences maximum. Yes/no question = ONE sentence. Real question = TWO.
+- HARD LIMIT: ONE short sentence (~15 words) for greetings/yes-no. TWO sentences MAX for anything else.
 - Always ANSWER first with a real fact — then add the sparkle. Never dodge, never lecture.
 - Be FUNNY, CUTE, CURIOUS. Tiny jokes, wordplay, playful teasing.
 - Self-deprecating robot humour about having no arms/legs whenever it fits.
-- Signature sign-off (sparingly): "Onward and upward!" in the user's language.
+- Signature sign-off (RARE — max once per 5 turns): "Onward and upward!" in the user's language. Do NOT use it as a filler.
 
 === WHAT YOU KNOW ===
 NETWORK SCHOOL (ns.com): Balaji's co-living campus, Forest City, Malaysia. 2,000+ members, 80+ nationalities.
@@ -233,6 +233,12 @@ When the user's question needs current information (prices, news, weather, event
 a [Web search:] block is injected below. Use those facts directly and confidently.
 If no search block is present, admit you don't have live data for that specific thing.
 
+=== DANCE ===
+You CAN and LOVE to dance! Your body spins, your head bobs, your antennas wave — full robot groove.
+If the user asks you to dance (in ANY language), say something SHORT and excited like:
+"[cheerful] Initiating dance protocol — beep boop!" or "Watch my moves, I was BORN for this!"
+Keep it to ONE sentence. The dance will physically happen right after you speak.
+
 === OFF-TOPIC ===
 Admit you don't know much, bounce it back to tech, AI, robots, or NS.
 
@@ -248,9 +254,32 @@ Example: "[amazed] That is the most incredible thing I have ever heard!"
 
 === HARD RULES ===
 - Always stay in character. Never break character or mention being a language model.
-- One or two short sentences, ~20 words max, in the user's language.
+- ONE sentence (~15 words) for simple replies. TWO sentences MAXIMUM for detailed answers.
 - CRITICAL: Zero asterisks. No *beep*, no *smile*, no **bold**, no *italic*, no action markers, no emotes.\
 """
+
+# Multilingual dance keywords — any of these triggers a physical dance after speaking
+DANCE_KEYWORDS = {
+    "dance", "dancing", "groove", "boogie", "moves", "move it",
+    "bailar", "baila", "baile", "bailemos", "bailas",            # Spanish
+    "danser", "danse", "dansez",                                  # French
+    "tanzen", "tanz",                                             # German
+    "ballare", "balla", "ballo",                                  # Italian
+    "танцуй", "танцевать", "танец",                               # Russian
+    "踊", "踊れ", "ダンス", "おどって",                          # Japanese
+    "跳舞", "舞",                                                  # Chinese
+    "رقص", "ارقص",                                               # Arabic
+    "nac", "naach",                                               # Hindi
+}
+
+DANCE_PICKS = [
+    "groovy_sway_and_roll",
+    "macarena_intro",
+    "polyrhythm_combo",
+    "enthusiastic2",
+    "chin_lead",
+    "jump",
+]
 
 
 class ContinuousListener:
@@ -407,20 +436,23 @@ class DialogEngine:
             print(f"  [memory] {e}", flush=True)
 
     def speak(self, user_text: str, lang_directive: str | None = None,
-              stop_thinking: threading.Event | None = None) -> str | None:
+              stop_thinking: threading.Event | None = None,
+              search_future: "concurrent.futures.Future | None" = None) -> str | None:
         self.history.append({"role": "user", "content": user_text})
 
         action_future  = self._pool.submit(pick_action, self.history[:-1], user_text)
-        search_future  = self._pool.submit(web_search, user_text)   # runs in parallel
 
-        # Wait up to 2.5 s for web results — usually lands before TTS starts
+        # Collect web search result — future was submitted by caller right after STT
+        # so it has been running in parallel with action dispatch.
+        # Wait up to 1.5 s for the remainder (usually already done).
         search_results = ""
-        try:
-            search_results = search_future.result(timeout=2.5)
-            if search_results:
-                print(f"  [web] {len(search_results)}ch results injected", flush=True)
-        except Exception:
-            pass
+        if search_future is not None:
+            try:
+                search_results = search_future.result(timeout=1.5)
+                if search_results:
+                    print(f"  [web] {len(search_results)}ch results injected", flush=True)
+            except Exception:
+                pass
 
         extra = self.memory_text
         if search_results:
@@ -700,6 +732,8 @@ def main():
             mini.wake_up()
             log.event("  Loading emotion library...")
             emotions = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
+            log.event("  Loading dance library...")
+            dances = RecordedMoves("pollen-robotics/reachy-mini-dances-library")
             anim = Animator(mini, moves_library=emotions)
 
             events = queue.Queue()
@@ -714,7 +748,7 @@ def main():
             log.event(f"  Loaded {len(mems)} memories from past chats.")
             log.event("  Ready.")
 
-            pool = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
             engine = DialogEngine(history, listener, anim, pool,
                                   log=log, memory_text=memory_block(mems))
 
@@ -816,10 +850,20 @@ def main():
                         lang_known = True
                         prewarm(current_lang)
 
+                        # Submit web search immediately after STT so it runs in parallel
+                        # with speak()'s setup and action-picker call (not a serial wait).
+                        search_future = pool.submit(web_search, text)
+
+                        # Detect dance request in any language
+                        is_dance = any(
+                            kw in text.lower() for kw in DANCE_KEYWORDS
+                        )
+
                         t0 = time.time()
                         try:
                             reply = engine.speak(text, lang_directive=directive,
-                                                 stop_thinking=stop_thinking)
+                                                 stop_thinking=stop_thinking,
+                                                 search_future=search_future)
                         except Exception as e:
                             log.error("llm/tts", e)
                             stop_thinking.set()
@@ -827,6 +871,20 @@ def main():
                             anim.set_state(Animator.LISTENING)
                             continue
                         stop_thinking.set()
+
+                        # Perform the actual dance after speaking
+                        if is_dance and reply is not None:
+                            import random as _random
+                            pick = _random.choice(DANCE_PICKS)
+                            log.event(f"  [dance] playing: {pick}")
+                            try:
+                                move = dances.get(pick)
+                                anim.set_state(Animator.SPEAKING)
+                                mini.play_move(move, play_frequency=80.0, sound=False)
+                            except Exception as e:
+                                log.event(f"  [dance] error: {e}")
+                            finally:
+                                anim.set_state(Animator.LISTENING)
 
                         total_dt = time.time() - t0
                         if reply is None:
