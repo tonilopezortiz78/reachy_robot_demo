@@ -50,6 +50,7 @@ from reachy_demo.memory import (
 from reachy_demo.dance import DANCE_KEYWORDS, do_macarena
 from reachy_demo.search import web_search
 from reachy_demo.session_log import SessionLogger
+from reachy_demo.speech_gate import is_real_speech
 from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_edge import synth_to_file
 
@@ -591,6 +592,7 @@ def main():
         daemon_proc = launch_daemon()
         log.event("  Loading VAD model...")
         vad_model = load_silero_vad()
+        gate_vad = load_silero_vad()   # separate instance for the noise gate
         client = Groq(api_key=GROQ_KEY)
         log.event("  Waiting for daemon...")
         wait_for_daemon(daemon_proc)
@@ -685,6 +687,12 @@ def main():
                         continue
                     if ev["type"] == "end":
                         pcm = ev["pcm"]
+                        # Noise gate: drop ambient hum / clicks / non-voiced clips
+                        # before Whisper so it can't hallucinate words on them.
+                        speech_ok, sm = is_real_speech(pcm, gate_vad)
+                        if not speech_ok:
+                            log.event(f"  [gate] ignored noise — {sm['reject_reason']}")
+                            continue
                         utt_s = len(pcm) / 2 / MIC_RATE
                         log.event(f"  [heard] utterance {utt_s:.1f}s → transcribing")
                         anim.set_state(Animator.THINKING)
