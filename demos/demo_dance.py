@@ -347,86 +347,60 @@ def main():
             mini.play_move(da.get("chin_lead"), play_frequency=80.0, sound=False)
             excited_chirp()
 
-            # ── Act 2: Macarena ──────────────────────────────────────────
+            # ── Act 2: Macarena (15 s music + 3 s silent) ───────────────
             print("\n  ── Act 2: Macarena ──")
-            beat_proc, music_t0 = play_music(MUSIC, loops=2)
+            MUSIC_DUR = 15.0
+            beat_proc = subprocess.Popen(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-stream_loop", "-1", "-i", MUSIC,
+                 "-af", "volume=2.0",
+                 "-t", str(MUSIC_DUR), "-f", "alsa", SPEAKER],
+            )
+            music_t0 = time.time()
             try:
-                # Dramatic entry spins
-                spin(mini,  1.4, duration=0.35)
-                spin(mini, -1.4, duration=0.35)
-                spin(mini,  0.0, duration=0.28)
+                # Faster entry spins
+                spin(mini,  1.4, duration=0.17)
+                spin(mini, -1.4, duration=0.17)
+                spin(mini,  0.0, duration=0.14)
 
-                # Snap to next clean beat boundary so cycles start in sync
+                # Snap to beat boundary
                 elapsed   = time.time() - music_t0
                 beat_idx  = math.ceil(elapsed / BEAT)
                 wait_snap = music_t0 + beat_idx * BEAT - time.time()
                 if wait_snap > 0:
                     time.sleep(wait_snap)
-                print(f"  Snapped to beat {beat_idx} ({elapsed:.2f}s into music)")
+                print(f"  Snapped to beat {beat_idx}")
 
-                # 3 escalating Macarena cycles (scale 1.0 → 1.30 → 1.60)
-                macarena_section(mini, em, da, cycles=3, music_t0=music_t0, beat_idx=beat_idx)
+                # Beat-synced cycles for the full music duration
+                beat_count = 0
+                while time.time() - music_t0 < MUSIC_DUR:
+                    i = beat_count % len(MACARENA_POSES)
+                    scale = 1.0 + min(beat_count // len(MACARENA_POSES), 2) * 0.30
+                    target_t = music_t0 + (beat_idx + beat_count) * BEAT
+                    if target_t > music_t0 + MUSIC_DUR:
+                        break
+                    macarena_beat(mini, MACARENA_POSES[i], scale, target_t)
+                    beat_count += 1
 
-                # Climax — punchy sequence using the dances library (each ~1.85s)
-                print("  *** CLIMAX ***")
-                excited_chirp()
-                spin360(mini)
-                mini.play_move(da.get("dizzy_spin"),           play_frequency=80.0, sound=False)
-                spin360(mini)
-                mini.play_move(da.get("polyrhythm_combo"),     play_frequency=80.0, sound=False)
-                excited_chirp()
-                spin360(mini)
-                mini.play_move(em.get("enthusiastic2"),        play_frequency=80.0, sound=False)
-                mini.play_move(em.get("success1"),             play_frequency=80.0, sound=False)
+                beat_proc.wait()  # confirm audio fully flushed
+                beat_proc = None
 
-                # ── REAL audio detection: keep dancing until silence ─
-                music_stopped = threading.Event()
-
-                def _monitor():
-                    try:
-                        det = subprocess.Popen(
-                            ["pacat", "--record", "--raw", f"--device={MIC_FALLBACK}",
-                             "--rate=16000", "--channels=1", "--format=s16le"],
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                        )
-                        silence = 0
-                        needed = int(16000 * 0.6 / 1024)
-                        while not music_stopped.is_set():
-                            raw = det.stdout.read(2048)
-                            if not raw or len(raw) < 2048:
-                                break
-                            rms = float(np.sqrt(np.mean(
-                                np.frombuffer(raw, dtype=np.int16).astype(np.float32) ** 2)))
-                            if rms < 15:
-                                silence += 1
-                                if silence >= needed:
-                                    music_stopped.set()
-                                    break
-                            else:
-                                silence = 0
-                    finally:
-                        try:
-                            det.terminate()
-                            det.wait(timeout=1)
-                        except Exception:
-                            pass
-                        music_stopped.set()
-
-                threading.Thread(target=_monitor, daemon=True).start()
-
-                while not music_stopped.is_set():
-                    for pose in MACARENA_POSES:
-                        if music_stopped.is_set():
-                            break
-                        macarena_beat(mini, pose, scale=1.6, target_t=time.time() + BEAT)
+                # 3 more seconds of silent dancing
+                silent_end = time.time() + 3.0
+                i = beat_count % len(MACARENA_POSES)
+                while time.time() < silent_end:
+                    macarena_beat(mini, MACARENA_POSES[i], 1.6,
+                                  time.time() + BEAT)
+                    i += 1
 
             finally:
-                beat_proc.terminate()
-                beat_proc.wait()
+                if beat_proc is not None:
+                    beat_proc.kill()
+                    beat_proc.wait()
 
             # ── Angry reaction ───────────────────────────────────────────
             print("  HEY! Where's the music?!")
-            chirp(300, 100, 0.30, vol=0.6)  # sad descending whine
+            chirp(300, 100, 0.30, vol=0.6)
 
             # ── Bow out ──────────────────────────────────────────────────
             print("\n  ── Bow out ──")

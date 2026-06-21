@@ -37,17 +37,18 @@ All demos run via `./run.sh demos/<file>.py` or through `./menu.sh`.
 
 ## Demo 2 — Full Dance Show (`demo_dance.py`)
 
-**What it does:** Boot sequence → greeting speech → music starts → ~60s curated dance using preloaded `RecordedMoves` presets → victory bow.
+**What it does:** Boot sequence → greeting speech → 15s beat-synced Macarena (entry spins + 3 escalating cycles) → music stops → 3 more seconds of silent dancing → indignant "HEY! Where's the music?!" → victory bow.
 
-**Runtime:** ~90 seconds
+**Runtime:** ~30 seconds
 
 **Tools / stack:**
-- Piper TTS — greeting speech
-- ffmpeg / aplay — music + audio
-- `RecordedMoves` from HuggingFace (`pollen-robotics/reachy-mini-dances-library`, `pollen-robotics/reachy-mini-emotions-library`) — preloaded dance presets
+- edge-tts — greeting + teaser speech
+- ffmpeg — music playback with `-t 15` precise cutoff + audio FX
+- aplay — robot speaker
+- `RecordedMoves` from HuggingFace (`pollen-robotics/reachy-mini-dances-library`, `pollen-robotics/reachy-mini-emotions-library`) — dance presets
 - Reachy Mini SDK — motion
 
-**No internet required** (HuggingFace models are cached locally on first run).
+**No internet required** (HuggingFace models cached locally). edge-tts needs a one-time internet call for the greeting cache.
 
 **Swap the music:** edit `MUSIC = ...` at the top of the file. Drop any MP3/WAV in `music/`.
 

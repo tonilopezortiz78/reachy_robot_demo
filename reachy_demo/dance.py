@@ -3,10 +3,10 @@ reachy_demo/dance.py — Macarena beat-sync dance + sound effects.
 
 Public API:
   DANCE_KEYWORDS  — set of trigger words in 10+ languages
-  do_macarena(mini, dances, emotions, anim, log=None, funny_text=None)
-      Full ~20 s beat-synced Macarena show with music, jump transitions,
-      and climax. Music stops → confused moves → speaks `funny_text` →
-      returns to neutral. Pauses the Animator for sole servo control.
+  do_macarena(mini, dances, emotions, anim, log=None, funny_text=None,
+              music_duration=15.0, injected_phrase=None, injected_at_s=6.0)
+      Beat-synced Macarena with music, then silent dancing, then reaction.
+      See do_macarena docstring for full flow.
   excited_chirp()
       Two ascending frequency sweeps — used before/during dance to signal
       excitement AND to clear the ALSA device after TTS aplay exits.
@@ -16,13 +16,10 @@ Music:       ROOT/music/macarena.mp3 at +6 dB via ffmpeg → ALSA.
 """
 import math
 import subprocess
-import threading
 import time
 from pathlib import Path
 
-import numpy as np
-
-from reachy_demo.audio import SPEAKER, MIC_FALLBACK
+from reachy_demo.audio import SPEAKER
 from reachy_demo.tts_edge import synth_to_file
 
 ROOT = Path(__file__).parent.parent
@@ -148,125 +145,109 @@ def _jump(mini):
     time.sleep(0.12)
 
 
+def _dance_n_beats(mini, n, scale=1.6):
+    """Dance `n` consecutive Macarena poses at beat rate. Returns True if stopped early."""
+    for i in range(n):
+        pose = _MACARENA_POSES[i % len(_MACARENA_POSES)]
+        _beat(mini, pose, scale, time.time() + _BEAT)
+    return True
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
+def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None,
+                music_duration=15.0, injected_phrase=None, injected_at_s=6.0):
     """
-    Full beat-synced Macarena show:
-      excited_chirp → music starts (2 loops of macarena.mp3) → entry spins
-      → 3 escalating cycles (scale 1.0→1.3→1.6) + jump transitions
-      → climax (3× spin360 + dizzy_spin + polyrhythm_combo + enthusiastic2
-      + success1) → keeps dancing until music actually stops → music ends
-      → robot looks confused → speaks `funny_text`
+    Beat-synced Macarena show (~18 s + reaction):
+
+      excited_chirp → music starts WITH injected TTS mixed in at injected_at_s
+      → 3 escalating cycles + jump transitions → music stops at `music_duration`
+      → 3 s silent dancing → confused head turns → speaks `funny_text`
+
+    Since the routine and music are always the same, timing is hardcoded from
+    the pre-analysed BPM. No audio detection needed — ffmpeg -t <duration>
+    guarantees precise cutoff.
 
     Pauses the Animator for the full duration so beat-sync goto_target calls
     have sole servo control. Resumes in finally so it's always restored.
-
-    `funny_text` is spoken via edge-tts (synth_to_file) right after the
-    confused moves, with a tiny head-bob during playback. Requires internet.
     """
     if log:
         log.event("  [dance] Macarena starting!")
     anim.pause()
     music_proc = None
+    inj_wav = None
     try:
         excited_chirp()   # clears ALSA + signals excitement
 
-        music_proc = subprocess.Popen(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-stream_loop", "2", "-i", str(MUSIC_PATH),
-             "-af", "volume=2.0", "-f", "alsa", SPEAKER],
-        )
+        # ── Build ffmpeg command: music + optional injected TTS ──────
+        ffmpeg_cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-stream_loop", "-1", "-i", str(MUSIC_PATH),
+        ]
+        if injected_phrase:
+            inj_wav = synth_to_file(injected_phrase)
+            ffmpeg_cmd += ["-i", inj_wav]
+            delay_ms = int(injected_at_s * 1000)
+            ffmpeg_cmd += [
+                "-filter_complex",
+                f"[0:a]volume=2.0[music];"
+                f"[1:a]adelay={delay_ms}[inj];"
+                f"[music][inj]amix=inputs=2:duration=first",
+            ]
+        else:
+            ffmpeg_cmd += ["-af", "volume=2.0"]
+
+        ffmpeg_cmd += ["-t", str(music_duration), "-f", "alsa", SPEAKER]
+
+        music_proc = subprocess.Popen(ffmpeg_cmd)
         music_t0 = time.time()
 
-        # Entry spins — double speed with head tracking
+        # ── Entry spins (0.48 s total) ─────────────────────────────
         _spin(mini,  1.4, dur=0.17)
         _spin(mini, -1.4, dur=0.17)
         _spin(mini,  0.0, dur=0.14)
 
-        # Snap to next clean beat boundary
+        # ── Snap to beat boundary ─────────────────────────────────
         elapsed  = time.time() - music_t0
-        beat_idx = math.ceil(elapsed / _BEAT)
-        wait_snap = music_t0 + beat_idx * _BEAT - time.time()
+        beat_offset = math.ceil(elapsed / _BEAT)
+        wait_snap = music_t0 + beat_offset * _BEAT - time.time()
         if wait_snap > 0:
             time.sleep(wait_snap)
 
-        # 3 escalating cycles
-        for cycle in range(3):
-            scale = 1.0 + cycle * 0.30
-            for i, pose in enumerate(_MACARENA_POSES):
-                _beat(mini, pose, scale,
-                      music_t0 + (beat_idx + cycle * len(_MACARENA_POSES) + i) * _BEAT)
-            if cycle == 1:
-                _jump(mini)
-                mini.play_move(dances.get("groovy_sway_and_roll"),
-                               play_frequency=80.0, sound=False)
-            elif cycle > 1:
-                _jump(mini)
+        # ── Beat-synced cycles for the full music duration ─────────
+        beat_count = 0
+        while time.time() - music_t0 < music_duration:
+            cycle = beat_count // len(_MACARENA_POSES)
+            i = beat_count % len(_MACARENA_POSES)
+            scale = 1.0 + min(cycle, 2) * 0.30  # clamp at 1.6
 
-        # Climax — no excited_chirp() here: music ffmpeg holds ALSA and chirps would fail
-        _spin360(mini)
-        mini.play_move(dances.get("dizzy_spin"),       play_frequency=80.0, sound=False)
-        _spin360(mini)
-        mini.play_move(dances.get("polyrhythm_combo"), play_frequency=80.0, sound=False)
-        _spin360(mini)
-        mini.play_move(emotions.get("enthusiastic2"),  play_frequency=80.0, sound=False)
-        mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
+            target_t = music_t0 + (beat_offset + beat_count) * _BEAT
+            if target_t > music_t0 + music_duration:
+                break
 
-        # ── REAL audio detection: monitor laptop mic for silence ─────
-        # Background thread reads from laptop mic (different device from
-        # robot mic, so no conflict). When RMS stays below threshold for
-        # ~600ms → music has truly stopped on the speaker.
-        music_stopped = threading.Event()
+            _beat(mini, _MACARENA_POSES[i], scale, target_t)
+            beat_count += 1
 
-        def _monitor():
-            try:
-                det = subprocess.Popen(
-                    ["pacat", "--record", "--raw", f"--device={MIC_FALLBACK}",
-                     "--rate=16000", "--channels=1", "--format=s16le"],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                )
-                silence = 0
-                needed = int(16000 * 0.6 / 1024)  # ~600ms
-                while not music_stopped.is_set():
-                    raw = det.stdout.read(2048)
-                    if not raw or len(raw) < 2048:
-                        break
-                    rms = float(np.sqrt(np.mean(
-                        np.frombuffer(raw, dtype=np.int16).astype(np.float32) ** 2)))
-                    if rms < 15:
-                        silence += 1
-                        if silence >= needed:
-                            music_stopped.set()
-                            break
-                    else:
-                        silence = 0
-            finally:
-                try:
-                    det.terminate()
-                    det.wait(timeout=1)
-                except Exception:
-                    pass
-                music_stopped.set()
+            # Jump transitions at end of cycles 2 and 3
+            if i == len(_MACARENA_POSES) - 1:
+                if cycle == 2:
+                    _jump(mini)
+                    mini.play_move(dances.get("groovy_sway_and_roll"),
+                                   play_frequency=80.0, sound=False)
+                elif cycle == 3:
+                    _jump(mini)
 
-        threading.Thread(target=_monitor, daemon=True).start()
+        # ── Wait for ffmpeg to finish (audio fully flushed) ─────────
+        music_proc.wait()
+        music_proc = None
 
-        # Main thread: keep dancing until the monitor hears silence
-        while not music_stopped.is_set():
-            for pose in _MACARENA_POSES:
-                if music_stopped.is_set():
-                    break
-                _beat(mini, pose, scale=1.6, target_t=time.time() + _BEAT)
-
-    finally:
-        # ── Stop music ──────────────────────────────────────────────
-        if music_proc is not None:
-            music_proc.terminate()
-            try:
-                music_proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                music_proc.kill()
-                music_proc.wait()
+        # ── 3 more seconds of silent dancing ─────────────────────────
+        silent_end = time.time() + 3.0
+        i = beat_count % len(_MACARENA_POSES)
+        while time.time() < silent_end:
+            _beat(mini, _MACARENA_POSES[i % len(_MACARENA_POSES)], 1.6,
+                  time.time() + _BEAT)
+            i += 1
 
         # ── Confused — "where'd the music go?" (fast double-take) ───
         mini.goto_target(head=create_head_pose(pitch=-0.10, roll=0.15, degrees=False),
@@ -284,7 +265,6 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
                     ["aplay", "-D", SPEAKER, "-q", wav],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
-                # Small head-bob during TTS playback
                 while play_proc.poll() is None:
                     mini.goto_target(
                         head=create_head_pose(pitch=0.05, yaw=0.10, degrees=False),
@@ -297,7 +277,12 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
                 play_proc.wait()
                 Path(wav).unlink(missing_ok=True)
 
-        # ── Return to neutral ───────────────────────────────────────
+    finally:
+        if music_proc is not None:
+            music_proc.kill()
+            music_proc.wait()
+        if inj_wav:
+            Path(inj_wav).unlink(missing_ok=True)
         mini.goto_target(head=create_head_pose(), antennas=[0.0, 0.0],
                          body_yaw=0.0, duration=0.5)
         time.sleep(0.6)
