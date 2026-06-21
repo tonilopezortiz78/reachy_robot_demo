@@ -24,10 +24,14 @@ echo "║  5) Talk to Reachy  🧠 Smart                         ║"
 echo "║     Same as above but deeper, smarter answers        ║"
 echo "║     Replies in ~15 s                                 ║"
 echo "║                                                      ║"
+echo "║  6) Talk to Reachy  🚀 Instant                       ║"
+echo "║     Streaming voice — starts talking almost          ║"
+echo "║     immediately (~0.4 s to first word)               ║"
+echo "║                                                      ║"
 echo "║  q) Quit                                             ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
-read -p "Pick [1-5/q]: " choice
+read -p "Pick [1-6/q]: " choice
 
 case $choice in
   1) ./run.sh demos/demo_welcome.py ;;
@@ -35,6 +39,7 @@ case $choice in
   3) ./run.sh demos/demo_face_recognition.py ;;
   4) ./run.sh demos/demo_tools7.py ;;
   5) ./run.sh demos/demo_deepseek.py ;;
+  6) ./run.sh demos/demo_instant.py ;;
   q|Q) echo "Bye!"; exit 0 ;;
-  *) echo "Please pick 1-5 or q."; exit 1 ;;
+  *) echo "Please pick 1-6 or q."; exit 1 ;;
 esac

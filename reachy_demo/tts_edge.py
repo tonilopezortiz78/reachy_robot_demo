@@ -12,6 +12,7 @@ Provides:
 """
 
 import asyncio
+import queue as _queue
 import subprocess
 import tempfile
 import threading
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import edge_tts as _edge_tts_mod  # import once at module level
 
-from reachy_demo.audio import play_wav_blocking  # noqa: F401  (re-export)
+from reachy_demo.audio import SPEAKER, play_wav_blocking  # noqa: F401  (re-export)
 
 # ── Voice constants ───────────────────────────────────────────────────────────
 
@@ -82,3 +83,108 @@ def synth_to_file(text: str) -> str:
     finally:
         Path(mp3).unlink(missing_ok=True)
     return out
+
+
+# ── Streaming playback (near-instant time-to-first-audio) ──────────────────────
+
+def stream_to_speaker(text: str, stop_check=None, on_first_audio=None,
+                      speaker: str = SPEAKER) -> bool:
+    """
+    Stream edge-tts audio STRAIGHT to the robot speaker as chunks arrive, instead
+    of synthesising the whole sentence to a file first. Audio starts ~0.4s after
+    the call (vs ~3.6s for synth-then-play) — this is what makes demo 6 feel
+    near-instant.
+
+    How: edge-tts `.stream()` yields MP3 chunks from Microsoft as they're
+    generated; we pipe them into `ffmpeg -i pipe:0 -f alsa <speaker>`, which
+    decodes and plays incrementally. The persistent event loop produces chunks
+    into a thread-safe queue; this (calling) thread feeds ffmpeg's stdin.
+
+    stop_check():    optional callable -> bool. Polled continuously; if it ever
+                     returns True, playback aborts immediately (barge-in).
+    on_first_audio(): optional callable fired once, when the first audio chunk is
+                     about to play (caller can switch to SPEAKING / kill ticks).
+
+    Returns True if it played to completion, False if aborted by stop_check.
+    """
+    snippet = text[:50].replace("\n", " ")
+    q: "_queue.Queue" = _queue.Queue()
+    _DONE = object()
+
+    async def _produce():
+        try:
+            c = _edge_tts_mod.Communicate(text, voice=VOICE, rate=RATE, pitch=PITCH)
+            async for chunk in c.stream():
+                if chunk["type"] == "audio":
+                    q.put(chunk["data"])
+        except Exception as e:                       # network hiccup, etc.
+            q.put(("ERR", e))
+        finally:
+            q.put(_DONE)
+
+    fut = asyncio.run_coroutine_threadsafe(_produce(), _tts_loop)
+
+    ff = subprocess.Popen(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error",
+         "-f", "mp3", "-i", "pipe:0",
+         "-af", f"volume={VOL}",
+         "-f", "alsa", speaker],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+    t0 = time.time()
+    first = True
+    aborted = False
+    err = None
+    try:
+        while True:
+            if stop_check and stop_check():
+                aborted = True
+                break
+            try:
+                item = q.get(timeout=0.05)
+            except _queue.Empty:
+                continue
+            if item is _DONE:
+                break
+            if isinstance(item, tuple) and item and item[0] == "ERR":
+                err = item[1]
+                break
+            if first:
+                first = False
+                if on_first_audio:
+                    on_first_audio()
+                print(f"  TTS  {time.time()-t0:.2f}s to first audio (stream) │ {snippet!r}",
+                      flush=True)
+            try:
+                ff.stdin.write(item)
+            except (BrokenPipeError, ValueError):
+                break
+    finally:
+        try:
+            ff.stdin.close()
+        except Exception:
+            pass
+        if aborted:
+            fut.cancel()
+            ff.terminate()
+            try:
+                ff.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                ff.kill(); ff.wait()
+        else:
+            # Drain: ffmpeg still has buffered audio to play. Keep checking
+            # barge-in so the user can interrupt the tail of a sentence too.
+            while ff.poll() is None:
+                if stop_check and stop_check():
+                    aborted = True
+                    ff.terminate()
+                    try:
+                        ff.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        ff.kill(); ff.wait()
+                    break
+                time.sleep(0.03)
+    if err is not None:
+        print(f"  TTS  stream error: {err}", flush=True)
+    return not aborted
