@@ -375,8 +375,15 @@ def main():
                 mini.play_move(em.get("enthusiastic2"),        play_frequency=80.0, sound=False)
                 mini.play_move(em.get("success1"),             play_frequency=80.0, sound=False)
 
+                # ── Extra 10 s: keep dancing while music plays ─────
+                extra_end = time.time() + 10
+                while time.time() < extra_end:
+                    for pose in MACARENA_POSES:
+                        if time.time() >= extra_end:
+                            break
+                        macarena_beat(mini, pose, scale=1.6, target_t=time.time() + BEAT)
+
             finally:
-                time.sleep(5)  # 5 more seconds of music before stopping
                 beat_proc.terminate()
                 beat_proc.wait()
 

@@ -149,11 +149,11 @@ def _jump(mini):
 
 def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
     """
-    Full beat-synced Macarena show (~20 s + 5 s music tail):
+    Full beat-synced Macarena show (~30 s):
       excited_chirp → music starts → entry spins (double-speed, head tracking)
       → 3 escalating cycles (scale 1.0→1.3→1.6) + jump transitions
       → climax (3× spin360 + dizzy_spin + polyrhythm_combo + enthusiastic2
-      + success1) → 5 s more music (beat keeps playing) → music stops
+      + success1) → 10 s extra Macarena cycles → music stops
       → robot looks confused → speaks `funny_text`
 
     Pauses the Animator for the full duration so beat-sync goto_target calls
@@ -210,10 +210,17 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None):
         mini.play_move(emotions.get("enthusiastic2"),  play_frequency=80.0, sound=False)
         mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
 
+        # ── Extra 10 s: keep dancing while music plays ──────────────
+        extra_end = time.time() + 10
+        while time.time() < extra_end:
+            for pose in _MACARENA_POSES:
+                if time.time() >= extra_end:
+                    break
+                _beat(mini, pose, scale=1.6, target_t=time.time() + _BEAT)
+
     finally:
-        # ── Let the groove play 5 more seconds before cutting ────────
+        # ── Stop music ──────────────────────────────────────────────
         if music_proc is not None:
-            time.sleep(5)
             music_proc.terminate()
             try:
                 music_proc.wait(timeout=2.0)
