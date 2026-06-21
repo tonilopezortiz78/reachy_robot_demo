@@ -30,7 +30,7 @@ reachy/
 ## Quick start
 
 ```bash
-cd /home/tony/software/reachy
+cd /home/tony/software/robots/reachy
 ./menu.sh
 # or run a specific demo:
 ./run.sh demos/demo1_moves.py

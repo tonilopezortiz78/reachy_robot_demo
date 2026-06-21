@@ -3,7 +3,7 @@
 ## Quick start
 
 ```bash
-cd /home/tony/software/reachy
+cd /home/tony/software/robots/reachy
 ./menu.sh
 ```
 
