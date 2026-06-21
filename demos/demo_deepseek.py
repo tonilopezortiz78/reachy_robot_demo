@@ -69,16 +69,34 @@ def _oc_log(text: str) -> None:
 
 # ── Web search ────────────────────────────────────────────────────────────────
 
-def web_search(query: str, max_results: int = 3, timeout: float = 4.0) -> str:
+_SEARCH_FILLER = re.compile(
+    r'\b(can you|could you|please|tell me|do you know|i want to know|'
+    r'what is|what are|what was|how much is|how much are|'
+    r'give me|show me|let me know)\b',
+    re.IGNORECASE,
+)
+
+def _clean_query(text: str) -> str:
+    """Strip conversational filler so DuckDuckGo gets a tighter search term."""
+    q = _SEARCH_FILLER.sub("", text)
+    q = re.sub(r'\s{2,}', ' ', q).strip(" ,?!.")
+    return q or text
+
+
+def web_search(query: str, max_results: int = 3) -> str:
     """
     Search the web via DuckDuckGo (no API key) and return a compact summary
-    of the top results. Returns "" on error or timeout.
-    Runs in a thread — call via pool.submit() so it overlaps with STT/TTS.
+    of the top results. Returns "" on error.
+    Strips conversational filler before searching — raw STT queries like
+    "Can you tell me the price of Bitcoin, please?" are slow (3-4 s on DDG)
+    while clean queries like "price of Bitcoin" resolve in < 1 s.
+    Submit via pool.submit() so it runs in parallel with STT/TTS.
     """
     try:
         from ddgs import DDGS
+        clean = _clean_query(query)
         with DDGS() as ddgs:
-            hits = list(ddgs.text(query, max_results=max_results))
+            hits = list(ddgs.text(clean, max_results=max_results))
         if not hits:
             return ""
         lines = [f"- {h['title']}: {h['body'][:200]}" for h in hits]
@@ -451,7 +469,7 @@ class DialogEngine:
         search_results = ""
         if search_future is not None:
             try:
-                search_results = search_future.result(timeout=1.5)
+                search_results = search_future.result(timeout=2.5)
                 if search_results:
                     print(f"  [web] {len(search_results)}ch results injected", flush=True)
             except Exception:

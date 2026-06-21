@@ -23,6 +23,7 @@ Everything is also echoed to stdout so the console is verbose too.
 """
 
 import json
+import shutil
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -37,10 +38,23 @@ def _next_interaction_dir(data_root: Path) -> Path:
     return data_root / str(n)
 
 
+def _prune_old_sessions(data_root: Path, keep: int = 3) -> None:
+    """Delete all but the <keep> most-recent numbered session directories."""
+    dirs = sorted(
+        [p for p in data_root.iterdir() if p.is_dir() and p.name.isdigit()],
+        key=lambda p: int(p.name),
+        reverse=True,
+    )
+    for old in dirs[keep:]:
+        shutil.rmtree(old, ignore_errors=True)
+
+
 class SessionLogger:
-    def __init__(self, root, demo_name: str):
+    def __init__(self, root, demo_name: str, keep_sessions: int = 3):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.dir = _next_interaction_dir(Path(root) / "data")
+        data_root = Path(root) / "data"
+        self.dir = _next_interaction_dir(data_root)
+        _prune_old_sessions(data_root, keep=keep_sessions)
         self.number = self.dir.name
         self.audio_dir = self.dir / "audio"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
