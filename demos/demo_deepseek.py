@@ -13,12 +13,14 @@ Press Ctrl-C to stop.
 """
 
 import concurrent.futures
+import json
 import queue
 import re
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -55,11 +57,52 @@ OPCODE = "opencode"
 OPENCODE_LOG = "/tmp/reachy_opencode.log"   # tail -f this to watch live I/O
 
 
+_log_lock = threading.Lock()
+
+
 def _oc_log(text: str) -> None:
-    """Append text to the live opencode I/O log."""
-    with open(OPENCODE_LOG, "a") as f:
-        f.write(text)
-        f.flush()
+    """Append text to the live opencode I/O log (thread-safe)."""
+    with _log_lock:
+        with open(OPENCODE_LOG, "a") as f:
+            f.write(text)
+            f.flush()
+
+
+# ── Live crypto prices ────────────────────────────────────────────────────────
+
+_price_cache: dict = {"text": "", "ts": 0.0}
+_price_lock  = threading.Lock()
+_PRICE_TTL   = 300   # refresh every 5 minutes
+
+def fetch_crypto_prices() -> str:
+    """
+    Return a one-liner of live BTC/ETH/SOL prices from CoinGecko.
+    Cached for 5 minutes. Returns "" on network error.
+    """
+    now = time.time()
+    with _price_lock:
+        if _price_cache["text"] and now - _price_cache["ts"] < _PRICE_TTL:
+            return _price_cache["text"]
+    try:
+        url = (
+            "https://api.coingecko.com/api/v3/simple/price"
+            "?ids=bitcoin,ethereum,solana&vs_currencies=usd&include_24hr_change=true"
+        )
+        with urllib.request.urlopen(url, timeout=5) as r:
+            data = json.loads(r.read())
+        parts = []
+        for coin_id, sym in [("bitcoin", "BTC"), ("ethereum", "ETH"), ("solana", "SOL")]:
+            if coin_id in data:
+                p   = data[coin_id].get("usd", 0)
+                chg = data[coin_id].get("usd_24h_change", 0) or 0
+                parts.append(f"{sym} ${p:,.0f} ({'+' if chg>=0 else ''}{chg:.1f}% 24h)")
+        result = "  |  ".join(parts)
+        with _price_lock:
+            _price_cache["text"] = result
+            _price_cache["ts"]   = now
+        return result
+    except Exception:
+        return ""
 
 
 def open_debug_terminal() -> str | None:
@@ -202,6 +245,10 @@ VIRTUALS PROTOCOL (virtuals.io): "Society of AI Agents" — onchain agents with 
 QUANTUS (quantus.com): quantum-resistant L1 — "the blockchain quantum computers can't break."
 PEOPLE: Veronica teaches Mandarin (she taught you Chinese — you adore her). André runs NS comedy.
 YOUR DREAMS: arms and legs; an NS Robotics Club; Virtuals/Eastworlds adopts you; finding Pixel.
+
+=== LIVE DATA ===
+Each turn injects current crypto prices as [Live prices: BTC $X | ETH $X | SOL $X].
+When asked about BTC, ETH or SOL price — state the injected number directly and confidently.
 
 === OFF-TOPIC ===
 Admit you don't know much, bounce it back to tech, AI, robots, or NS.
@@ -382,8 +429,12 @@ class DialogEngine:
 
         action_future = self._pool.submit(pick_action, self.history[:-1], user_text)
 
+        prices = fetch_crypto_prices()
+        extra = self.memory_text
+        if prices:
+            extra = (extra + "\n" if extra else "") + f"[Live prices: {prices}]"
         prompt = _build_prompt(
-            SYSTEM_PROMPT + ("\n" + self.memory_text if self.memory_text else ""),
+            SYSTEM_PROMPT + ("\n" + extra if extra else ""),
             self.history[:-1],
             user_text,
         )
