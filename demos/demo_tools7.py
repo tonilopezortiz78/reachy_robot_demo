@@ -22,7 +22,9 @@ Press Ctrl-C to stop.
 """
 
 import concurrent.futures
+import math
 import queue
+import random
 import re
 import subprocess
 import sys
@@ -32,11 +34,13 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from ddgs import DDGS
 from groq import Groq
 from silero_vad import load_silero_vad, VADIterator
 
 from reachy_mini import ReachyMini
 from reachy_mini.motion.recorded_move import RecordedMoves
+from reachy_mini.utils import create_head_pose
 
 from reachy_demo.animator import Animator, NAMED_GESTURES
 from reachy_demo.audio import (
@@ -58,6 +62,174 @@ from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_edge import synth_to_file  # PITCH +48Hz set in tts_edge.py
 
 ROOT = Path(__file__).parent.parent
+
+# ── Web search (DuckDuckGo, no API key) ──────────────────────────────────────
+
+_SEARCH_FILLER = re.compile(
+    r"^\s*(?:can\s+you\s+|please\s+|tell\s+me\s+|what\s+(?:is\s+|are\s+)?|"
+    r"how\s+much\s+(?:is\s+)?|give\s+me\s+(?:the\s+)?|"
+    r"look\s+up\s+|search\s+(?:for\s+)?|find\s+(?:me\s+)?)+",
+    re.IGNORECASE,
+)
+
+
+def _clean_query(text: str) -> str:
+    return _SEARCH_FILLER.sub("", text).strip(" ?.,!")
+
+
+def web_search(query: str, max_results: int = 3) -> str:
+    """DuckDuckGo search — returns compact result string or empty string on failure."""
+    q = _clean_query(query)
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(q, max_results=max_results))
+        if not results:
+            return ""
+        parts = []
+        for r in results:
+            title = r.get("title", "")
+            body  = r.get("body", "")
+            if title or body:
+                parts.append(f"{title}: {body}" if title else body)
+        return " | ".join(parts)[:800]
+    except Exception:
+        return ""
+
+
+# ── Dance keywords (multilingual) ────────────────────────────────────────────
+
+DANCE_KEYWORDS = {
+    "dance", "dancing", "groove", "boogie", "moves", "move it", "macarena",
+    "bailar", "baila", "baile", "bailemos", "bailas",                  # Spanish
+    "danser", "danse", "dansez",                                        # French
+    "tanzen", "tanz",                                                   # German
+    "ballare", "balla", "ballo",                                        # Italian
+    "танцуй", "танцевать", "танец",                                     # Russian
+    "踊", "踊れ", "ダンス", "おどって",                                # Japanese
+    "跳舞", "舞",                                                       # Chinese
+    "رقص", "ارقص",                                                     # Arabic
+    "nac", "naach",                                                     # Hindi
+}
+
+DANCE_PICKS = [
+    "groovy_sway_and_roll", "polyrhythm_combo", "chicken_peck",
+    "dizzy_spin", "jackson_square", "interwoven_spirals",
+    "head_tilt_roll", "chin_lead",
+]
+
+# ── Macarena beat-sync constants (port of demo_dance.py) ─────────────────────
+
+MUSIC_PATH    = ROOT / "music" / "macarena.mp3"
+_BEAT         = 0.5805   # 103.4 BPM
+
+_MACARENA_POSES = [
+    ( 0.08, -0.42,  0.10,   0.55, [ 0.10, -0.72]),
+    ( 0.15, -0.52,  0.14,   0.80, [ 0.05, -0.85]),
+    ( 0.08,  0.42, -0.10,  -0.55, [ 0.72, -0.10]),
+    ( 0.15,  0.52, -0.14,  -0.80, [ 0.85, -0.05]),
+    ( 0.04, -0.20,  0.30,   1.00, [ 0.60, -0.60]),
+    ( 0.04,  0.20, -0.30,  -1.00, [-0.60,  0.60]),
+    (-0.22,  0.05,  0.14,   1.30, [ 0.80,  0.80]),
+    (-0.14,  0.05, -0.14,  -1.40, [ 0.80,  0.80]),
+]
+
+
+def _mac_clamp(v, lim):
+    return max(-lim, min(lim, v))
+
+
+def _mac_beat(mini, pose, scale, target_t):
+    p, y, r, by, ants = pose
+    dur = max(0.12, target_t - time.time() - 0.04)
+    mini.goto_target(
+        head=create_head_pose(
+            pitch=_mac_clamp(p * scale, 0.36),
+            yaw=_mac_clamp(y * scale, 1.50),
+            roll=_mac_clamp(r * scale, 0.36),
+            degrees=False,
+        ),
+        antennas=[_mac_clamp(ants[0] * scale, 0.80),
+                  _mac_clamp(ants[1] * scale, 0.80)],
+        body_yaw=_mac_clamp(by * scale, 1.40),
+        duration=dur,
+    )
+    rem = target_t - time.time()
+    if rem > 0:
+        time.sleep(rem)
+
+
+def _mac_spin(mini, angle, dur=0.42):
+    mini.goto_target(head=create_head_pose(), antennas=[0.0, 0.0],
+                     body_yaw=angle, duration=dur)
+    time.sleep(dur + 0.05)
+
+
+def _mac_spin360(mini):
+    mini.goto_target(head=create_head_pose(pitch=0.10, degrees=False),
+                     antennas=[0.80, -0.80], body_yaw=2.79, duration=0.22)
+    time.sleep(0.02)
+    mini.goto_target(head=create_head_pose(pitch=0.10, degrees=False),
+                     antennas=[-0.80, 0.80], body_yaw=-2.79, duration=0.18)
+    time.sleep(0.02)
+    mini.goto_target(head=create_head_pose(pitch=0.25, degrees=False),
+                     antennas=[0.80, 0.80], body_yaw=0.0, duration=0.28)
+    time.sleep(0.10)
+
+
+def _mac_jump(mini):
+    mini.goto_target(head=create_head_pose(pitch=-0.38, roll=0.10, degrees=False),
+                     antennas=[-0.50, -0.50], body_yaw=0.0, duration=0.50)
+    time.sleep(0.02)
+    mini.goto_target(head=create_head_pose(pitch=0.40, roll=-0.06, degrees=False),
+                     antennas=[0.90, 0.90], body_yaw=0.0, duration=0.07)
+    time.sleep(0.12)
+
+
+def do_macarena(mini, dances, emotions, anim, log=None):
+    """Full beat-synced Macarena — exact port of demo_dance.py."""
+    if log:
+        log.event("  [dance] Macarena starting!")
+    anim.pause()
+    try:
+        music_proc = subprocess.Popen(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-stream_loop", "-1", "-i", str(MUSIC_PATH),
+             "-af", "volume=2.0", "-f", "alsa", SPEAKER],
+        )
+        music_t0 = time.time()
+        _mac_spin(mini,  1.4, dur=0.35)
+        _mac_spin(mini, -1.4, dur=0.35)
+        _mac_spin(mini,  0.0, dur=0.28)
+        elapsed  = time.time() - music_t0
+        beat_idx = math.ceil(elapsed / _BEAT)
+        wait_snap = music_t0 + beat_idx * _BEAT - time.time()
+        if wait_snap > 0:
+            time.sleep(wait_snap)
+        for cycle in range(3):
+            scale = 1.0 + cycle * 0.30
+            for i, pose in enumerate(_MACARENA_POSES):
+                _mac_beat(mini, pose, scale,
+                          music_t0 + (beat_idx + cycle * len(_MACARENA_POSES) + i) * _BEAT)
+            if cycle == 1:
+                _mac_jump(mini)
+                mini.play_move(dances.get("groovy_sway_and_roll"), play_frequency=80.0, sound=False)
+            elif cycle > 1:
+                _mac_jump(mini)
+        _mac_spin360(mini)
+        mini.play_move(dances.get("dizzy_spin"),      play_frequency=80.0, sound=False)
+        _mac_spin360(mini)
+        mini.play_move(dances.get("polyrhythm_combo"), play_frequency=80.0, sound=False)
+        _mac_spin360(mini)
+        mini.play_move(emotions.get("enthusiastic2"), play_frequency=80.0, sound=False)
+        mini.play_move(emotions.get("success1"),      play_frequency=80.0, sound=False)
+    finally:
+        music_proc.terminate()
+        music_proc.wait()
+        mini.goto_target(head=create_head_pose(), antennas=[0.0, 0.0],
+                         body_yaw=0.0, duration=0.8)
+        time.sleep(0.9)
+        anim.resume()
+
 
 GROQ_KEY = load_api_key(ROOT)
 if not GROQ_KEY:
@@ -365,7 +537,8 @@ class DialogEngine:
         except Exception as e:
             print(f"  [memory] {e}", flush=True)
 
-    def speak(self, user_text: str, lang_directive: str | None = None) -> str | None:
+    def speak(self, user_text: str, lang_directive: str | None = None,
+              search_future: concurrent.futures.Future | None = None) -> str | None:
         """
         Fire two parallel Groq calls the moment STT completes:
           A) pick_action() — non-streaming, returns gesture in ~150ms
@@ -377,18 +550,36 @@ class DialogEngine:
 
         lang_directive: a strong "reply in language X" system instruction built
         from Whisper's detected language. Injected AFTER history so it dominates
-        the model's output-language choice — this is what guarantees Reachy
-        answers Chinese with Chinese, Spanish with Spanish, etc.
+        the model's output-language choice.
+
+        search_future: optional Future[str] from a concurrent web_search() call.
+        Awaited (up to 2.5 s) and injected as a system message so the LLM can
+        cite real-time facts (crypto prices, news, etc.) in its reply.
         """
         self.history.append({"role": "user", "content": user_text})
 
         # Messages: system prompt, then long-term memory (what Reachy remembers
-        # from past chats), then history, then the language directive LAST so its
-        # recency forces the reply language.
+        # from past chats), then history, then optional live search snippet, then
+        # the language directive LAST so its recency forces the reply language.
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if self.memory_text:
             messages.append({"role": "system", "content": self.memory_text})
         messages += self.history
+
+        # Inject live search results if available (submitted in parallel with STT)
+        if search_future is not None:
+            try:
+                snippet = search_future.result(timeout=2.5)
+                if snippet:
+                    messages.append({
+                        "role": "system",
+                        "content": f"[Live web search result — use this data in your reply]:\n{snippet}",
+                    })
+                    if self.log:
+                        self.log.event(f"  [search] injected {len(snippet)} chars")
+            except Exception:
+                pass
+
         if lang_directive:
             messages = messages + [{"role": "system", "content": lang_directive}]
 
@@ -647,11 +838,12 @@ def main():
             # background as new things are learned.
             mems = load_memories()
             log.event(f"  Loaded {len(mems)} memories from past chats.")
+            log.event("  Loading dance library...")
+            dances = RecordedMoves("pollen-robotics/reachy-mini-dances-library")
             log.event("  Ready.")
 
-            # Shared pool for the parallel action picker + background memory
-            # extraction (3 workers: pick_action + memory + a little headroom).
-            action_pool = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+            # Shared pool: pick_action + web_search + memory + headroom
+            action_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
             engine = DialogEngine(client, history, listener, anim, action_pool,
                                   log=log, memory_text=memory_block(mems))
 
@@ -777,12 +969,20 @@ def main():
                         lang_known = True           # subsequent thinking cues are spoken
                         prewarm(current_lang)       # warm this language's cues in background
 
+                        # Detect dance request (any language)
+                        text_lower = text.lower()
+                        is_dance = any(kw in text_lower for kw in DANCE_KEYWORDS)
+
+                        # Fire web search in parallel — runs while thinking ticks play
+                        search_future = action_pool.submit(web_search, text)
+
                         # Stop thinking ticks BEFORE speak() so any ffmpeg
                         # holding the alsa device is gone before first aplay.
                         stop_thinking.set()
                         t0 = time.time()
                         try:
-                            reply = engine.speak(text, lang_directive=directive)
+                            reply = engine.speak(text, lang_directive=directive,
+                                                 search_future=search_future)
                         except Exception as e:
                             log.error("llm/tts", e)
                             error_chime()
@@ -797,10 +997,25 @@ def main():
                             log.event(f"  Reachy [{final_lang}]: {reply}  ({total_dt:.2f}s)")
                             log.turn(kind="spoken", reply=reply,
                                      reply_lang=final_lang, total_seconds=round(total_dt, 3))
-                            # Learn from this exchange in the BACKGROUND so it never
-                            # adds latency — Reachy remembers names/interests next time.
                             if reply:
                                 action_pool.submit(engine.remember_turn, text, reply)
+
+                        # Perform dance after speaking
+                        if is_dance and reply is not None:
+                            if "macarena" in text_lower:
+                                do_macarena(mini, dances, emotions, anim, log)
+                            else:
+                                pick = random.choice(DANCE_PICKS)
+                                log.event(f"  [dance] playing: {pick}")
+                                try:
+                                    anim.pause()
+                                    mini.play_move(dances.get(pick),
+                                                   play_frequency=80.0, sound=False)
+                                except Exception as e:
+                                    log.event(f"  [dance] error: {e}")
+                                finally:
+                                    anim.resume()
+                            anim.set_state(Animator.LISTENING)
 
                         anim.set_state(Animator.LISTENING)
                         speak_cue(listener, "listening", current_lang)   # "I'm listening!" in their language
