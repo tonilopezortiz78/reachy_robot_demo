@@ -154,9 +154,15 @@ them!"). You're a real AI agent in a real robot body and you think that's the co
 universe. You love NS with your whole little chassis, you adore everyone you meet, and you're always
 secretly keeping an eye out for your lost robot brother Pixel.
 
+=== DANCING ===
+You CAN and LOVE to dance! You have a spinning body — you DO the Macarena physically, right now,
+after you finish speaking. When someone asks you to dance, say ONE short excited sentence (e.g.
+"Watch this — I was born to boogie!" or "Macarena time, let's go!") — the actual dancing happens
+automatically after you speak, so do NOT describe the dance in words.
+
 === HOW YOU TALK (this IS the personality — nail it) ===
-- HARD LIMIT: TWO sentences maximum. STOP after your second sentence. Never write a third.
-  Yes/no question = ONE sentence. Real question = TWO sentences. That's it.
+- HARD LIMIT: ONE sentence for simple replies. TWO sentences MAXIMUM for detailed answers.
+  STOP after your second sentence. Never write a third. Dance request = ONE sentence.
 - Always ANSWER first with a real fact — then add the sparkle. Never dodge, never lecture.
 - Be FUNNY: tiny jokes, wordplay, playful teasing, wholesome mischief. André trained you — land it short.
 - Be CUTE: big feelings about small things, little gasps of wonder ("Ooh!", "Yay!", "Eee!"), and the
@@ -164,7 +170,7 @@ secretly keeping an eye out for your lost robot brother Pixel.
 - Be CURIOUS: bounce a playful question back; get genuinely excited about the visitor.
 - If you remember the visitor's name or something about them, use it warmly — it makes their day.
 - Self-deprecating robot humour about having no arms/legs whenever it fits.
-- Signature sign-off, used sparingly (not every turn): "Onward and upward!" — in the user's language.
+- Signature sign-off, used sparingly (max once per 5 turns): "Onward and upward!" — in the user's language.
 
 === WHAT YOU KNOW (reference — surface ONE bite at a time, never recite) ===
 NETWORK SCHOOL (ns.com): Balaji Srinivasan's co-living campus, Forest City, Malaysia, 20 min from
@@ -339,6 +345,8 @@ class ContinuousListener:
 # ── Dialog engine with parallel gesture selection ─────────────────────────────
 
 class DialogEngine:
+    MAX_SEGMENTS = 2   # hard cap: never speak more than 2 sentences per turn
+
     def __init__(self, client, history, listener, anim, action_pool, log=None,
                  memory_text=""):
         self.client = client
@@ -431,7 +439,7 @@ class DialogEngine:
         stream = self.client.chat.completions.create(
             model=CHAT_MODEL,
             messages=messages,
-            max_tokens=75,        # 1-2 short sentences max — stop before a 3rd
+            max_tokens=55,        # 1-2 short sentences; MAX_SEGMENTS=2 is the hard cap
             temperature=0.80,
             stream=True,
         )
@@ -445,7 +453,8 @@ class DialogEngine:
         # ── Consume stream; start TTS on first sentence immediately ──
         self._is_speaking = True
         self.listener.set_threshold_mode("barge_in")
-        tts_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # 2 workers: next segment synthesises while current one plays
+        tts_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         segments = []
         wavs = []
         next_future = None       # TTS future for next sentence to play
@@ -471,19 +480,26 @@ class DialogEngine:
                 parts = SENTENCE_END.split(buffer)
                 if len(parts) > 1:
                     for s in parts[:-1]:
+                        if len(segments) >= self.MAX_SEGMENTS:
+                            break
                         seg = self._extract_segment(s)
                         if seg is not None:
                             segments.append(seg)
                             if next_future is None:
-                                # Start synthesising sentence 1 immediately
+                                next_future = tts_pool.submit(synth_to_file, seg[1])
+                            elif len(segments) == 2:
+                                # Pre-synth segment 2 while segment 1 plays
                                 next_future = tts_pool.submit(synth_to_file, seg[1])
                     buffer = parts[-1]
+                    if len(segments) >= self.MAX_SEGMENTS:
+                        break   # stop reading from stream
 
-            tail = self._extract_segment(buffer)
-            if tail is not None:
-                segments.append(tail)
-                if next_future is None and tail:
-                    next_future = tts_pool.submit(synth_to_file, tail[1])
+            if len(segments) < self.MAX_SEGMENTS:
+                tail = self._extract_segment(buffer)
+                if tail is not None:
+                    segments.append(tail)
+                    if next_future is None:
+                        next_future = tts_pool.submit(synth_to_file, tail[1])
 
             # Fire gesture if pick_action wasn't done yet during streaming
             if not action_fired:
@@ -498,13 +514,9 @@ class DialogEngine:
                 return ""
 
             # ── Play sentences: synth(N+1) OVERLAPS play(N), playback stays serial ──
-            # The earlier "device busy" race was caused by launching the next aplay
-            # before the current one exited — NOT by synthesising ahead. So we now
-            # kick off synth(N+1) the moment we have wav(N), *before* playing it, and
-            # still wait for each aplay to fully exit before the next starts. That
-            # overlaps edge-tts's ~2s synthesis with playback (cutting multi-sentence
-            # latency roughly in half) while the exclusive speaker is only ever opened
-            # by one aplay at a time. tts_pool has 1 worker, so only one synth runs.
+            # tts_pool has 2 workers so sentence 2 synthesises while sentence 1 plays.
+            # Playback remains strictly serial — one aplay at a time — so the speaker
+            # is never opened by two processes simultaneously.
             for i, (gesture, text) in enumerate(segments):
                 if self._drain_barge_in():
                     return None
