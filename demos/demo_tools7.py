@@ -414,12 +414,15 @@ class DialogEngine:
         messages += self.history
 
         # Inject live search results if available (submitted in parallel with STT).
-        # Non-blocking: if the search hasn't finished yet, start the LLM without
-        # it — a slow search shouldn't delay every reply.
+        # Wait up to 2s for the search to finish — most DDG queries resolve in
+        # ~1s, and the LLM is still processing the prompt so results arrive in
+        # time for the first reply tokens.
         snippet = None
-        if search_future is not None and search_future.done():
+        if search_future is not None:
             try:
-                snippet = search_future.result(timeout=0)
+                snippet = search_future.result(timeout=2.0)
+            except concurrent.futures.TimeoutError:
+                pass
             except Exception:
                 pass
         if snippet:
