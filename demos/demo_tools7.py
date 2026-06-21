@@ -502,14 +502,26 @@ class DialogEngine:
         # ── Consume stream; start TTS on first sentence immediately ──
         self._is_speaking = True
         self.listener.set_threshold_mode("barge_in")
-        # 2 workers: next segment synthesises while current one plays
-        tts_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        # One worker per possible segment so EVERY sentence synthesises in
+        # parallel the instant its text arrives — not one-ahead. The LLM streams
+        # the whole reply in ~1s, so all sentences start synthesising together;
+        # by the time sentence 1 finishes playing, 2 and 3 are already done and
+        # play back-to-back with no gap. Playback itself stays strictly serial.
+        tts_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_SEGMENTS)
         segments = []
+        futures = []             # one TTS future per segment, submitted at extract time
         wavs = []
-        next_future = None       # TTS future for next sentence to play
         action_fired = False
         opening_played = False   # did the AI gesture picker fire a real gesture?
         buffer = ""
+
+        def _add_segment(seg):
+            """Record a segment and IMMEDIATELY start synthesising it in parallel."""
+            segments.append(seg)
+            futures.append(tts_pool.submit(synth_to_file, seg[1]))
+            if self.log:
+                self.log.event(
+                    f"  [synth {len(segments)}] creating wav (parallel): \"{seg[1]}\"")
 
         try:
             for chunk in stream:
@@ -533,16 +545,7 @@ class DialogEngine:
                             break
                         seg = self._extract_segment(s)
                         if seg is not None:
-                            segments.append(seg)
-                            if self.log:
-                                self.log.event(
-                                    f"  [synth {len(segments)}] creating wav: "
-                                    f"\"{seg[1]}\"")
-                            # Submit first segment's TTS during streaming;
-                            # the playback loop below submits subsequent segments
-                            # one-ahead (synth N+1 while playing N).
-                            if next_future is None:
-                                next_future = tts_pool.submit(synth_to_file, seg[1])
+                            _add_segment(seg)
                     buffer = parts[-1]
                     if len(segments) >= self.MAX_SEGMENTS:
                         break   # stop reading from stream
@@ -550,12 +553,7 @@ class DialogEngine:
             if len(segments) < self.MAX_SEGMENTS:
                 tail = self._extract_segment(buffer)
                 if tail is not None:
-                    segments.append(tail)
-                    if self.log:
-                        self.log.event(
-                            f"  [synth {len(segments)}] creating wav: \"{tail[1]}\"")
-                    if next_future is None:
-                        next_future = tts_pool.submit(synth_to_file, tail[1])
+                    _add_segment(tail)
 
             # Fire gesture if pick_action wasn't done yet during streaming
             if not action_fired:
@@ -569,21 +567,16 @@ class DialogEngine:
                 self.history.append({"role": "assistant", "content": ""})
                 return ""
 
-            # ── Play sentences: synth(N+1) OVERLAPS play(N), playback stays serial ──
-            # tts_pool has 2 workers so sentence 2 synthesises while sentence 1 plays.
-            # Playback remains strictly serial — one aplay at a time — so the speaker
-            # is never opened by two processes simultaneously.
+            # ── Play sentences in order; all synths already running in parallel ──
+            # We just wait for each segment's pre-submitted future, so playback
+            # has no gaps. Playback stays serial — one aplay at a time — so the
+            # exclusive speaker is never opened by two processes at once.
             for i, (gesture, text) in enumerate(segments):
                 if self._drain_barge_in():
                     return None
 
-                wav = next_future.result()
+                wav = futures[i].result()
                 wavs.append(wav)
-
-                # Start synthesising the NEXT sentence NOW so it runs while this one
-                # plays. (Playback below remains strictly serial — see note above.)
-                if i + 1 < len(segments):
-                    next_future = tts_pool.submit(synth_to_file, segments[i + 1][1])
 
                 # On the first segment, stop thinking ticks so any in-flight
                 # ffmpeg tone releases the ALSA device before aplay starts.
