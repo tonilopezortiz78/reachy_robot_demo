@@ -44,6 +44,7 @@ from reachy_demo.audio import (
     MIC_RATE,
     boot_beeps, cleanup_orphan_capture, ensure_mic_working, error_chime,
     voice_filter_pcm, pcm_to_wav_bytes, speaking_chime, startup_device_report,
+    start_thinking_ticks,
 )
 from reachy_demo.cues import speak_cue, speak_thinking, prewarm, set_translator
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
@@ -652,19 +653,13 @@ def main():
                         utt_s = len(pcm) / 2 / MIC_RATE
                         log.event(f"  [heard] utterance {utt_s:.1f}s → transcribing")
                         anim.set_state(Animator.THINKING)
-                        # Speak "let me think..." cue — non-blocking chirp so STT
-                        # starts immediately. The thinking-tick background loop
-                        # (below) continues during LLM inference for cute beeps.
                         # Save the EXACT audio Whisper will hear (replayable WAV)
                         audio_path = log.save_audio(pcm)
 
                         # Verbal "Hmm, let me think..." the instant the user stops,
                         # spoken WHILE Whisper transcribes in a pool thread — so it's
                         # an immediate, natural acknowledgement with ZERO added
-                        # latency (STT finishes underneath the ~1s filler). No beep
-                        # loop in the instant demo; the streamed reply lands right
-                        # after. stop_thinking/tick_thread kept as no-ops so the rest
-                        # of the loop and cleanup are unchanged.
+                        # latency (STT finishes underneath the ~1s filler).
                         stop_thinking = threading.Event()
                         tick_thread = None
                         try:
@@ -738,9 +733,10 @@ def main():
                         # Fire web search in parallel — runs while thinking ticks play
                         search_future = action_pool.submit(web_search, text)
 
-                        # Stop thinking ticks BEFORE speak() so any in-flight ffmpeg
-                        # tone releases the alsa device — speak() itself stops them
-                        # right before the first aplay, so ticks play during LLM too.
+                        # Cute thinking beeps during LLM inference. Killed by
+                        # stop_thinking.set() inside engine.speak() right before the
+                        # first TTS segment plays.
+                        tick_thread = start_thinking_ticks(stop_thinking)
                         t0 = time.time()
                         try:
                             reply = engine.speak(text, lang_directive=directive,
