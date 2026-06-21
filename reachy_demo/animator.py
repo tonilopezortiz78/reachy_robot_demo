@@ -61,13 +61,14 @@ def _s(amp, freq, t, phase=0.0):
 
 
 def _send(mini, p, y, r, by, ant_l, ant_r):
-    # Safe envelope: clamp every axis to a range the IK solver can always
-    # satisfy. These limits are tighter than the SDK's hard limits so the
-    # combined (head + body + antennas) pose never self-collides.
-    p  = max(-0.30, min(0.30, p))
-    y  = max(-0.40, min(0.40, y))
-    r  = max(-0.25, min(0.25, r))
-    by = max(-0.30, min(0.30, by))
+    # Tighter combined envelope — individual axes look fine but the IK solver
+    # rejects certain combined (pitch+roll+yaw+body_yaw) poses as self-colliding.
+    # These limits were tuned empirically: they keep the animation expressive
+    # while eliminating the "Collision detected / head pose not achievable" warnings.
+    p  = max(-0.22, min(0.22, p))
+    y  = max(-0.32, min(0.32, y))
+    r  = max(-0.16, min(0.16, r))
+    by = max(-0.22, min(0.22, by))
     al = max(-0.70, min(0.70, ant_l))
     ar = max(-0.70, min(0.70, ant_r))
     try:
@@ -409,10 +410,10 @@ class Animator:
 
                 elif state == self.LISTENING:
                     # Head tilted attentively, body leaning in, antennas perked + fluttering
-                    p  =  0.14 + _s(0.06, 0.30, t) + _s(0.02, 0.72, t)
-                    y  =  _s(0.26, 0.28, t) + _s(0.09, 0.67, t) + _s(0.03, 1.40, t)
-                    r  =  0.10 + _s(0.06, 0.22, t) + _s(0.02, 0.51, t)
-                    by =  _s(0.20, 0.15, t) + _s(0.06, 0.36, t)
+                    p  =  0.10 + _s(0.05, 0.30, t) + _s(0.02, 0.72, t)
+                    y  =  _s(0.20, 0.28, t) + _s(0.07, 0.67, t) + _s(0.02, 1.40, t)
+                    r  =  0.05 + _s(0.05, 0.22, t) + _s(0.02, 0.51, t)
+                    by =  _s(0.15, 0.15, t) + _s(0.05, 0.36, t)
                     # Alternating flutter — one antenna chases the other
                     al =  0.55 + _s(0.22, 0.55, t)
                     ar =  0.40 + _s(0.22, 0.55, t, phase=math.pi * 0.8)
@@ -430,10 +431,10 @@ class Animator:
 
                 elif state == self.SPEAKING:
                     # Very expressive: 3-harmonic head bobs, body engagement, lively antennas
-                    p  =  0.10 + _s(0.12, 0.44, t) + _s(0.05, 1.18, t) + _s(0.02, 2.25, t)
-                    y  =  _s(0.24, 0.34, t) + _s(0.09, 0.80, t) + _s(0.03, 1.85, t)
-                    r  =  _s(0.09, 0.24, t) + _s(0.04, 0.57, t)
-                    by =  _s(0.24, 0.19, t) + _s(0.08, 0.46, t)
+                    p  =  0.08 + _s(0.10, 0.44, t) + _s(0.04, 1.18, t) + _s(0.02, 2.25, t)
+                    y  =  _s(0.18, 0.34, t) + _s(0.07, 0.80, t) + _s(0.02, 1.85, t)
+                    r  =  _s(0.07, 0.24, t) + _s(0.03, 0.57, t)
+                    by =  _s(0.18, 0.19, t) + _s(0.06, 0.46, t)
                     # Excited antenna flutter — both move but out of phase for liveliness
                     al =  0.32 + _s(0.32, 0.68, t) + _s(0.08, 1.75, t)
                     ar =  0.32 + _s(0.32, 0.68, t, phase=math.pi * 0.65) + _s(0.08, 1.75, t, phase=math.pi)
