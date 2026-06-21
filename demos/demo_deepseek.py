@@ -365,10 +365,25 @@ def _mac_spin360(mini):
     time.sleep(0.10)
 
 
+def _mac_jump(mini):
+    """Slow push-down → instant snap-up (slingshot effect). Port of jump() from demo_dance.py."""
+    mini.goto_target(
+        head=create_head_pose(pitch=-0.38, roll=0.10, degrees=False),
+        antennas=[-0.50, -0.50], body_yaw=0.0, duration=0.50,
+    )
+    time.sleep(0.02)
+    mini.goto_target(
+        head=create_head_pose(pitch=0.40, roll=-0.06, degrees=False),
+        antennas=[0.90, 0.90], body_yaw=0.0, duration=0.07,
+    )
+    time.sleep(0.12)
+
+
 def do_macarena(mini, dances, emotions, anim, log=None):
     """
-    Play ~18 s of beat-synced Macarena: music + 3 escalating cycles + climax.
-    Pauses the Animator so the beat-sync goto_target calls have sole control.
+    Full beat-synced Macarena — exact port of demo_dance.py.
+    3 escalating cycles (scale 1.0→1.3→1.6) + jump transitions + climax.
+    Music: macarena.mp3 at +6 dB. Pauses the Animator for sole servo control.
     """
     import math as _math
     if log:
@@ -382,7 +397,7 @@ def do_macarena(mini, dances, emotions, anim, log=None):
         )
         music_t0 = time.time()
 
-        # Entry spins
+        # Entry spins (dramatic intro)
         _mac_spin(mini,  1.4, dur=0.35)
         _mac_spin(mini, -1.4, dur=0.35)
         _mac_spin(mini,  0.0, dur=0.28)
@@ -394,45 +409,31 @@ def do_macarena(mini, dances, emotions, anim, log=None):
         if wait_snap > 0:
             time.sleep(wait_snap)
 
-        # 3 escalating Macarena cycles (scale 1.0 → 1.3 → 1.6)
+        # 3 escalating Macarena cycles (scale 1.0 → 1.30 → 1.60)
         for cycle in range(3):
             scale = 1.0 + cycle * 0.30
             for i, pose in enumerate(_MACARENA_POSES):
                 beat_num = beat_idx + cycle * len(_MACARENA_POSES) + i
                 _mac_beat(mini, pose, scale, music_t0 + beat_num * _BEAT)
             if cycle == 1:
-                mini.goto_target(
-                    head=create_head_pose(pitch=-0.38, degrees=False),
-                    antennas=[-0.50, -0.50], body_yaw=0.0, duration=0.50)
-                time.sleep(0.02)
-                mini.goto_target(
-                    head=create_head_pose(pitch=0.40, degrees=False),
-                    antennas=[0.90, 0.90], body_yaw=0.0, duration=0.07)
-                time.sleep(0.12)
+                _mac_jump(mini)
                 mini.play_move(dances.get("groovy_sway_and_roll"),
                                play_frequency=80.0, sound=False)
-            elif cycle == 2:
-                mini.goto_target(
-                    head=create_head_pose(pitch=-0.38, degrees=False),
-                    antennas=[-0.50, -0.50], body_yaw=0.0, duration=0.50)
-                time.sleep(0.02)
-                mini.goto_target(
-                    head=create_head_pose(pitch=0.40, degrees=False),
-                    antennas=[0.90, 0.90], body_yaw=0.0, duration=0.07)
-                time.sleep(0.12)
+            elif cycle > 1:
+                _mac_jump(mini)
 
-        # Climax
+        # Climax — mirrors demo_dance.py exactly
         _mac_spin360(mini)
         mini.play_move(dances.get("dizzy_spin"),       play_frequency=80.0, sound=False)
         _mac_spin360(mini)
         mini.play_move(dances.get("polyrhythm_combo"), play_frequency=80.0, sound=False)
         _mac_spin360(mini)
+        mini.play_move(emotions.get("enthusiastic2"),  play_frequency=80.0, sound=False)
         mini.play_move(emotions.get("success1"),       play_frequency=80.0, sound=False)
 
     finally:
         music_proc.terminate()
         music_proc.wait()
-        # Return to neutral
         mini.goto_target(
             head=create_head_pose(), antennas=[0.0, 0.0],
             body_yaw=0.0, duration=0.8,

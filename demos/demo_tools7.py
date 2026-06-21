@@ -74,7 +74,7 @@ if not GROQ_KEY:
 #                  memory extraction. Llama 3.1 8B Instant: fastest (~0.29s) and
 #                  cheapest on Groq — perfect for tiny one-shot calls, and it makes
 #                  the gesture fire even sooner, before the first spoken word.
-CHAT_MODEL   = "llama-3.3-70b-versatile"
+CHAT_MODEL   = "meta-llama/llama-4-scout-17b-16e-instruct"   # natively multilingual, no same-script mixing
 ACTION_MODEL = "llama-3.1-8b-instant"
 MODEL = CHAT_MODEL   # back-compat alias (logging, etc.)
 
@@ -365,8 +365,7 @@ class DialogEngine:
         except Exception as e:
             print(f"  [memory] {e}", flush=True)
 
-    def speak(self, user_text: str, lang_directive: str | None = None,
-              stop_thinking: threading.Event | None = None) -> str | None:
+    def speak(self, user_text: str, lang_directive: str | None = None) -> str | None:
         """
         Fire two parallel Groq calls the moment STT completes:
           A) pick_action() — non-streaming, returns gesture in ~150ms
@@ -380,10 +379,6 @@ class DialogEngine:
         from Whisper's detected language. Injected AFTER history so it dominates
         the model's output-language choice — this is what guarantees Reachy
         answers Chinese with Chinese, Spanish with Spanish, etc.
-
-        stop_thinking: optional Event set the instant the first TTS segment is
-        about to play. Used to silence the "thinking tick" loop so the beep
-        doesn't overlap the spoken reply.
         """
         self.history.append({"role": "user", "content": user_text})
 
@@ -506,11 +501,6 @@ class DialogEngine:
                 if gesture and not opening_played:
                     self.anim.play_gesture(gesture)
                     opening_played = True
-
-                # First segment is about to play — silence the thinking-tick
-                # loop RIGHT NOW so it can't overlap the spoken reply.
-                if i == 0 and stop_thinking is not None:
-                    stop_thinking.set()
 
                 self.anim.set_state(Animator.SPEAKING)
                 self._tts_proc = subprocess.Popen(
@@ -787,20 +777,17 @@ def main():
                         lang_known = True           # subsequent thinking cues are spoken
                         prewarm(current_lang)       # warm this language's cues in background
 
+                        # Stop thinking ticks BEFORE speak() so any ffmpeg
+                        # holding the alsa device is gone before first aplay.
+                        stop_thinking.set()
                         t0 = time.time()
                         try:
-                            reply = engine.speak(text, lang_directive=directive,
-                                                 stop_thinking=stop_thinking)
+                            reply = engine.speak(text, lang_directive=directive)
                         except Exception as e:
                             log.error("llm/tts", e)
-                            stop_thinking.set()
                             error_chime()
                             anim.set_state(Animator.LISTENING)
                             continue
-                        # speak() sets stop_thinking itself on the happy path
-                        # (right before the first TTS segment plays). On barge-in
-                        # or no-segments cases it never set it — do it now.
-                        stop_thinking.set()
 
                         total_dt = time.time() - t0
                         if reply is None:
