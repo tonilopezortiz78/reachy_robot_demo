@@ -247,6 +247,16 @@ def pick_action(client, history, user_text):
 # any language, whether the user is giving/correcting THEIR OWN name and returns
 # it; extract_name() pulls the name out of an answer to "what's your name?".
 
+def _valid_person_name(name: str) -> bool:
+    """Sanity gate for roster names. STT hallucinations produced entries like
+    'আ' (one char) and 'india' (an answer, not a name); junk names corrupt
+    recognition and trigger greeting spam, so reject anything implausible."""
+    name = (name or "").strip()
+    return (2 <= len(name) <= 20
+            and all(ch.isalpha() or ch in " -'" for ch in name)
+            and any(ch.isalpha() for ch in name))
+
+
 def detect_rename(client, text: str) -> str | None:
     """All-language voice-rename detector. If the user is stating or changing
     THEIR OWN name (in any language: 'my name is X', 'me llamo X', '私の名前はX',
@@ -262,7 +272,11 @@ def detect_rename(client, text: str) -> str | None:
                     "OWN name — introducing themselves or telling the robot what "
                     "to call them. If yes, reply with ONLY that name, in its "
                     "normal Latin/original spelling, and nothing else. If they "
-                    "are NOT giving their own name, reply exactly NONE."},
+                    "are NOT giving their own name, reply exactly NONE. "
+                    "Requests for actions (dance, sing, play), questions, and "
+                    "OTHER people's names are all NONE. Examples: "
+                    "'me llamo Ana' -> Ana; 'can you dance macarena' -> NONE; "
+                    "'this is my friend Sachi' -> NONE; 'India' -> NONE."},
                 {"role": "user", "content": text},
             ],
             max_tokens=8, temperature=0.0, stream=False,
@@ -875,9 +889,16 @@ def main():
                     anim.set_antenna_bias(max(-0.25, min(0.30, ant_target)))
                     time.sleep(1.0 / 30)
 
+            last_any_greet = [0.0]  # global cross-name greeting throttle
+
             def _greet_async(text):
-                if state.anim_state == "speaking":
+                # Global throttle across ALL spoken greetings: flapping
+                # recognition once produced a greeting every ~8 s, muting the
+                # mic so often the robot appeared to have stopped listening.
+                now = time.time()
+                if state.anim_state == "speaking" or now - last_any_greet[0] < 20.0:
                     return
+                last_any_greet[0] = now
                 def _say():
                     if not speech_lock.acquire(blocking=False):
                         return   # reply/cue in progress — skip, don't overlap
@@ -896,7 +917,8 @@ def main():
                 face_thread.start()
 
             last_repeat = 0.0
-            web_muted = [False]   # dashboard Mute hold currently applied
+            web_muted = [False]     # dashboard Mute hold currently applied
+            pending_lang = [None]   # language-switch hysteresis (needs 2 hits)
 
             def ask_repeat():
                 nonlocal last_repeat
@@ -1018,6 +1040,22 @@ def main():
                             text, final_lang, stt_retried, stt_stats = stt_future.result()
                             stt_dt = time.time() - t0
                             state.stt_s = stt_dt
+                            # Language hysteresis: Whisper misdetects short or
+                            # quiet utterances (Catalan/Bengali came back for
+                            # English speakers), which flipped the reply
+                            # language mid-chat. Only switch after hearing the
+                            # SAME new language twice in a row — someone truly
+                            # switching confirms on their very next sentence.
+                            if lang_known and final_lang and final_lang != current_lang:
+                                if pending_lang[0] != final_lang:
+                                    pending_lang[0] = final_lang
+                                    log.event(f"  [lang] heard {final_lang} once — "
+                                              f"replying in {current_lang} until confirmed")
+                                    final_lang = current_lang
+                                else:
+                                    pending_lang[0] = None
+                            else:
+                                pending_lang[0] = None
                             directive = language_directive(final_lang)
                         except Exception as e:
                             log.error("transcribe", e)
@@ -1059,8 +1097,19 @@ def main():
                         if claimed_onboard:
                             # Pull just the name out of "my name is Tony" etc.;
                             # fall back to the raw (trimmed) transcript if unsure.
-                            name_text = (extract_name(groq_client, text)
-                                         or text.strip().strip(".,!?;:\"'").strip())
+                            name_text = extract_name(groq_client, text) or ""
+                            if not name_text:
+                                raw = text.strip().strip(".,!?;:\"'").strip()
+                                name_text = raw.split()[0].title() if raw else ""
+                            if not _valid_person_name(name_text):
+                                # Don't enroll junk ('আ', whole sentences, …):
+                                # bad roster names poison recognition forever.
+                                log.event(f"  [onboard] rejected junk name {name_text!r}")
+                                onboarding_track_id[0] = None
+                                _greet_async("Hmm, I didn't catch your name — tell me again later!")
+                                anim.set_state(Animator.LISTENING)
+                                state.anim_state = "listening"
+                                continue
                             # Current box of the track being onboarded, so the
                             # RIGHT face gets enrolled when several are in view.
                             # If the track is gone we pass None — exclude_known
@@ -1117,8 +1166,18 @@ def main():
                         # roster entry for this speaker, re-capture the face, and
                         # re-save under X. Only checked on short utterances so it
                         # never runs the detector on long conversational turns.
-                        if cam is not None and len(text.split()) <= 12:
+                        text_lower = text.lower()
+                        is_dance = any(kw in text_lower for kw in DANCE_KEYWORDS)
+                        # Never treat an action request as a self-introduction:
+                        # "Can you dance macarena" once got misheard, passed to
+                        # detect_rename, and created a bogus roster person with
+                        # the current speaker's face — corrupting recognition.
+                        if (cam is not None and not is_dance
+                                and 2 <= len(text.split()) <= 8):
                             new_name = detect_rename(groq_client, text)
+                            if new_name and not _valid_person_name(new_name):
+                                log.event(f"  [rename] rejected junk name {new_name!r}")
+                                new_name = None
                             if new_name:
                                 old_name = None
                                 speaker_box = None
@@ -1178,8 +1237,6 @@ def main():
                                 speak_cue(listener, "listening", current_lang)
                                 continue
 
-                        text_lower = text.lower()
-                        is_dance = any(kw in text_lower for kw in DANCE_KEYWORDS)
                         search_future = (
                             action_pool.submit(web_search, text)
                             if _needs_search(text) else None)

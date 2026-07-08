@@ -231,10 +231,12 @@ def _beep_wav(name: str, tones) -> str | None:
         return None
 
 
-# Rising two-tone = "your turn, talk now"; single low tick = "I'm working".
+# The two beeps must be instantly tellable apart even on the small speaker:
+# READY  = bright RISING two-tone ("ta-da, your turn — talk!")
+# THINK  = low FALLING double-tone ("hmm, working on it")
 # Kids read the beeps instantly where a whispered phrase can be missed.
-READY_TONES = [(880.0, 0.09), (1320.0, 0.12)]
-THINK_TONES = [(520.0, 0.07)]
+READY_TONES = [(880.0, 0.10), (1420.0, 0.14)]
+THINK_TONES = [(440.0, 0.09), (300.0, 0.13)]
 
 
 def speak_cue(listener, kind: str, lang: str):
