@@ -285,6 +285,19 @@ button:active { transform: scale(0.97); }
   pointer-events: none;
 }
 .video-overlay.show { display: block; }
+.tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.tab-btn {
+  padding: 6px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(127,127,127,0.35);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.tab-btn.active { background: rgba(127,127,127,0.25); font-weight: 600; }
+.tabpane { display: none; }
+.tabpane.active { display: block; }
 </style>
 </head>
 <body>
@@ -304,6 +317,11 @@ button:active { transform: scale(0.97); }
      </div>
    </div>
   <div class="right">
+    <div class="tabs">
+      <button class="tab-btn active" id="tab-btn-robot" onclick="showTab('robot')">Robot</button>
+      <button class="tab-btn" id="tab-btn-admin" onclick="showTab('admin')">Admin</button>
+    </div>
+    <div class="tabpane active" id="tab-robot">
     <div class="card">
       <h2>Status</h2>
       <div class="status-row">
@@ -347,10 +365,6 @@ button:active { transform: scale(0.97); }
         <span class="status-value mono" id="known-person-count">0</span>
       </div>
       <div class="status-row">
-        <span class="status-label">LLM Provider</span>
-        <span class="status-value"><span class="chip chip-groq" id="llm-provider">groq</span></span>
-      </div>
-      <div class="status-row">
         <span class="status-label">Mic</span>
         <span class="status-value" id="mic-status">Unmuted</span>
       </div>
@@ -360,25 +374,6 @@ button:active { transform: scale(0.97); }
       <div class="card lat-card"><span class="lat-label">LLM TTF</span><span class="lat-val" id="lat-llm">0.00s</span></div>
       <div class="card lat-card"><span class="lat-label">TTS TTA</span><span class="lat-val" id="lat-tts">0.00s</span></div>
       <div class="card lat-card"><span class="lat-label">Total</span><span class="lat-val" id="lat-total">0.00s</span></div>
-    </div>
-    <div class="card">
-      <h2>Costs</h2>
-      <div class="status-row">
-        <span class="status-label">Model</span>
-        <span class="status-value mono" id="llm-model">&mdash;</span>
-      </div>
-      <div class="status-row">
-        <span class="status-label">Tokens In</span>
-        <span class="status-value mono" id="tokens-in">0</span>
-      </div>
-      <div class="status-row">
-        <span class="status-label">Tokens Out</span>
-        <span class="status-value mono" id="tokens-out">0</span>
-      </div>
-      <div class="status-row">
-        <span class="status-label">Est. Cost</span>
-        <span class="status-value mono" id="est-cost">$0.0000</span>
-      </div>
     </div>
     <div class="card">
       <h2>Person</h2>
@@ -398,9 +393,43 @@ button:active { transform: scale(0.97); }
         </div>
       </div>
     </div>
+    </div><!-- /tab-robot -->
+    <div class="tabpane" id="tab-admin">
+    <!-- Business-sensitive info (provider, model, spend) lives on its own tab
+         so the default view is safe to project to visitors/kids. -->
+    <div class="card">
+      <h2>LLM &amp; Costs</h2>
+      <div class="status-row">
+        <span class="status-label">LLM Provider</span>
+        <span class="status-value"><span class="chip chip-groq" id="llm-provider">groq</span></span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Model</span>
+        <span class="status-value mono" id="llm-model">&mdash;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Tokens In</span>
+        <span class="status-value mono" id="tokens-in">0</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Tokens Out</span>
+        <span class="status-value mono" id="tokens-out">0</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Est. Cost</span>
+        <span class="status-value mono" id="est-cost">$0.0000</span>
+      </div>
+    </div>
+    </div><!-- /tab-admin -->
   </div>
 </main>
 <script>
+function showTab(name) {
+  document.getElementById("tab-robot").className = "tabpane" + (name === "robot" ? " active" : "");
+  document.getElementById("tab-admin").className = "tabpane" + (name === "admin" ? " active" : "");
+  document.getElementById("tab-btn-robot").className = "tab-btn" + (name === "robot" ? " active" : "");
+  document.getElementById("tab-btn-admin").className = "tab-btn" + (name === "admin" ? " active" : "");
+}
 var muted = false;
 var connOK = true;
 var pollTimer = null;
