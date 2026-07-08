@@ -17,6 +17,7 @@ and the prompt tells Reachy not to assume the current visitor is the same person
 it just lets Reachy charmingly bring up things it has heard before.
 """
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -39,9 +40,15 @@ def load_memories() -> list[str]:
 
 
 def _save(mems: list[str]):
+    # Write atomically (temp file + os.replace) so a concurrent, unlocked reader
+    # in load_memories()/memory_block() — e.g. the main thread building the next
+    # prompt while this runs in the background — never sees a half-written file
+    # and silently loses all remembered facts for that turn.
     try:
         MEM_FILE.parent.mkdir(parents=True, exist_ok=True)
-        MEM_FILE.write_text(json.dumps(mems, ensure_ascii=False, indent=2))
+        tmp = MEM_FILE.with_name(MEM_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(mems, ensure_ascii=False, indent=2))
+        os.replace(tmp, MEM_FILE)
     except Exception:
         pass
 

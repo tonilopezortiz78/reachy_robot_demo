@@ -33,7 +33,7 @@ log.event(f"MIC = {MIC}")
 for i in (3, 2, 1):
     print(f"  speak in {i}...", flush=True)
     time.sleep(1)
-print(f"  >>> TALK NOW — say a clear sentence (Japanese, English, anything) <<<", flush=True)
+print("  >>> TALK NOW — say a clear sentence (Japanese, English, anything) <<<", flush=True)
 log.event(f"Recording {SECONDS:.0f}s...")
 
 # Record straight from the auto-detected robot mic

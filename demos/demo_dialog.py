@@ -38,7 +38,7 @@ from reachy_demo.animator import Animator, NAMED_GESTURES
 from reachy_demo.audio import (
     MIC, MIC_RATE, VAD_CHUNK, SPEAKER,
     assert_mic_ok, boot_beeps, cleanup_orphan_capture, error_chime,
-    pcm_to_wav_bytes, play_wav_blocking, speaking_chime, startup_device_report,
+    pcm_to_wav_bytes, speaking_chime, startup_device_report,
 )
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon
 from reachy_demo.groq_client import load_api_key, transcribe_lang, language_directive

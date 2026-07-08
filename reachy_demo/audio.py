@@ -445,9 +445,23 @@ def wait_for_music_end(mic_device: str | None = None,
         log_func("  [music-detect] falling back to process check")
         return False
 
+    fd = proc.stdout.fileno()
     try:
         while time.time() < deadline:
-            raw = proc.stdout.read(_DETECT_CHUNK * 2)
+            # select()-guarded read so a wedged source (open pipe, zero bytes)
+            # can't hang past the deadline — a plain blocking read() would.
+            raw = b""
+            while len(raw) < _DETECT_CHUNK * 2:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                r, _, _ = select.select([fd], [], [], remaining)
+                if not r:
+                    break                       # stalled / deadline
+                chunk = os.read(fd, _DETECT_CHUNK * 2 - len(raw))
+                if not chunk:
+                    break                       # EOF
+                raw += chunk
             if not raw or len(raw) < _DETECT_CHUNK * 2:
                 log_func("  [music-detect] capture stream died — assuming silence")
                 return True
@@ -733,19 +747,43 @@ def record_utterance(vad_model, ping=None) -> bytes | None:
     max_frames  = int(MAX_RECORD_S * MIC_RATE / VAD_CHUNK)
     total       = 0
 
+    # A healthy source delivers a ~16 ms frame continuously. If NO bytes arrive
+    # for STALL_S, the PipeWire source has wedged ("(null)" state): pacat's pipe
+    # stays OPEN but delivers zero bytes forever, so a plain blocking read() would
+    # hang here indefinitely — and the caller's `finally: goto_sleep()` would never
+    # run, leaving the motors energised (overheat risk). select() with a deadline
+    # turns that silent hang into the RuntimeError below, same as capture_pcm().
+    STALL_S = 4.0
+    fd = arecord.stdout.fileno()
+
     try:
         while total < max_frames:
-            raw = arecord.stdout.read(VAD_CHUNK * 2)
-            if not raw or len(raw) < VAD_CHUNK * 2:
-                # Mic stream died (0 bytes) — device lost or grabbed by another
-                # process. Surface it instead of silently returning None, which
-                # would make the demo loop forever showing "Listening..." with
-                # no response. The caller's finally still runs goto_sleep().
+            raw = b""
+            frame_deadline = time.time() + STALL_S
+            while len(raw) < VAD_CHUNK * 2:
+                remaining = frame_deadline - time.time()
+                if remaining <= 0:
+                    break                       # stalled — source wedged
+                r, _, _ = select.select([fd], [], [], remaining)
+                if not r:
+                    break                       # stalled — no data available
+                chunk = os.read(fd, VAD_CHUNK * 2 - len(raw))
+                if not chunk:
+                    break                       # EOF — pacat exited
+                raw += chunk
+            if len(raw) < VAD_CHUNK * 2:
+                # Mic stream died or wedged — device lost, grabbed by another
+                # process, or the PipeWire source stalled. Surface it instead of
+                # silently returning None (which would make the demo loop forever
+                # showing "Listening..." with no response) or hanging on read()
+                # (which would skip goto_sleep). The finally below runs, and so
+                # does the caller's finally: goto_sleep().
                 raise RuntimeError(
-                    f"Microphone stream closed unexpectedly "
-                    f"(got {len(raw) if raw else 0} bytes). The mic device may "
-                    "have been unplugged or grabbed by another process. "
-                    "Run cleanup_orphan_capture() and replug USB, then restart."
+                    f"Microphone stream closed or stalled "
+                    f"(got {len(raw)} bytes in {STALL_S:.0f}s). The mic device may "
+                    "have been unplugged, grabbed by another process, or the "
+                    "PipeWire source wedged. Run cleanup_orphan_capture() and "
+                    "replug USB, then restart."
                 )
 
             audio_f32 = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
@@ -806,7 +844,10 @@ def pcm_to_wav_bytes(pcm: bytes) -> bytes:
 # rejected the phantoms (voiced ~0.0) that had plenty of in-band energy.
 _VOICE_LO = 100.0     # cut sub-bass rumble / motor & USB-power hum
 _VOICE_HI = 7000.0    # cut top-end hiss / servo whine (just under 8 kHz Nyquist)
-_bp_sos = None
+# Cache the designed filter per (lo, hi, rate) so a caller passing a non-default
+# band/rate gets the right filter — a single global would silently reuse the
+# first call's coefficients for every later call.
+_bp_cache: dict = {}
 
 
 def voice_filter_pcm(pcm: bytes, lo: float = _VOICE_LO, hi: float = _VOICE_HI,
@@ -814,13 +855,15 @@ def voice_filter_pcm(pcm: bytes, lo: float = _VOICE_LO, hi: float = _VOICE_HI,
     """Band-pass `pcm` (int16 mono) to the human-voice range. Cheap (~1ms) and
     safe on short clips (returns input unchanged if too short). See note above:
     this is hygiene; speech_gate.is_real_speech is the real noise discriminator."""
-    global _bp_sos
     arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
     if arr.size < 32:
         return pcm
-    if _bp_sos is None:
+    key = (lo, hi, rate)
+    sos = _bp_cache.get(key)
+    if sos is None:
         ny = rate / 2.0
-        _bp_sos = butter(2, [lo / ny, min(hi, ny * 0.99) / ny],
-                         btype="band", output="sos")
-    out = sosfilt(_bp_sos, arr)
+        sos = butter(2, [lo / ny, min(hi, ny * 0.99) / ny],
+                     btype="band", output="sos")
+        _bp_cache[key] = sos
+    out = sosfilt(sos, arr)
     return np.clip(out, -32768, 32767).astype(np.int16).tobytes()

@@ -25,7 +25,7 @@ from reachy_mini import ReachyMini
 
 from reachy_demo.animator import Animator
 from reachy_demo.audio import (
-    assert_mic_ok, boot_beeps, blip, chirp, cleanup_orphan_capture, error_chime,
+    assert_mic_ok, boot_beeps, chirp, cleanup_orphan_capture, error_chime,
     pcm_to_wav_bytes, record_utterance, speaking_chime, startup_device_report,
 )
 from reachy_demo.daemon import launch_daemon, wait_for_daemon, stop_daemon

@@ -283,4 +283,8 @@ def stream_chat(
         stream=True,
     )
     for chunk in stream:
+        # A terminal usage/keep-alive chunk can carry an empty `choices` list;
+        # indexing [0] on it would raise IndexError and kill the reply mid-stream.
+        if not chunk.choices:
+            continue
         yield chunk.choices[0].delta.content or ""

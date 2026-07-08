@@ -3,7 +3,7 @@
 Test capture devices one at a time. Beeps before each recording.
 SPEAK after the beep. Plays back on robot speaker.
 """
-import subprocess, tempfile, time, sys
+import subprocess, tempfile, time
 from pathlib import Path
 
 SPEAKER = "plughw:CARD=Audio,DEV=0"
