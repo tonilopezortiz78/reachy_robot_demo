@@ -64,7 +64,9 @@ def stream_chat(client, messages, *, model=MODEL, max_tokens=88, temperature=0.8
     The request is issued EAGERLY here so auth/model errors raise at call time
     (letting the caller fall back to Groq) rather than deep inside iteration.
     Returns a generator yielding text deltas; caller handles the empty-choice case."""
-    stream = client.chat.completions.create(
+    # with_options(timeout=...) bounds connect/read stalls so a dead connection
+    # can't freeze the robot mid-reply; per-chunk reads of the stream inherit it.
+    stream = client.with_options(timeout=20.0).chat.completions.create(
         model=model, messages=messages,
         max_tokens=max_tokens, temperature=temperature, stream=True,
     )

@@ -57,8 +57,12 @@ from reachy_demo.face_id import FaceIdentifier
 from reachy_demo.groq_client import (
     is_hallucination, language_directive, load_api_key, transcribe_lang_robust,
 )
+from reachy_demo import kids
 from reachy_demo.live_state import LiveState
-from reachy_demo.memory import extract_memories, load_memories, memory_block, remember
+from reachy_demo.memory import (
+    extract_memories, load_memories, load_person_facts, memory_block,
+    person_summary_block, remember, remember_person,
+)
 from reachy_demo.recorder import DiagnosticRecorder
 from reachy_demo.session_log import SessionLogger
 from reachy_demo.search import web_search
@@ -87,6 +91,12 @@ FACES_DIR = ROOT / "faces"
 
 CHAT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 ACTION_MODEL = "llama-3.1-8b-instant"
+
+# Rough per-token price ESTIMATES for the dashboard cost readout (not billing
+# data): Llama-4-scout is ~$0.11 per 1M input / ~$0.34 per 1M output tokens,
+# similar on both Groq and Cerebras. Token counts are approximated as chars//4.
+COST_IN_PER_TOKEN = 0.11 / 1_000_000
+COST_OUT_PER_TOKEN = 0.34 / 1_000_000
 
 REPEAT_COOLDOWN_S = 15.0
 GREET_COOLDOWN_S = 90.0
@@ -206,6 +216,14 @@ waiting_for_name = [False]
 onboarding_track_id = [None]
 onboarding_started_at = [0.0]
 last_face_results = [[]]
+# Serializes every path that plays speech: the main reply flow holds it for the
+# whole turn, async greeting threads try-acquire and SKIP instead of talking
+# over a reply (which also double-unmuted the mic).
+speech_lock = threading.Lock()
+# Guards waiting_for_name/onboarding_track_id transitions so the 15 s give-up
+# in face_loop can't race the name-answer branch in the main loop.
+onboard_lock = threading.Lock()
+last_voice_at = [0.0]   # when real user speech last ended (quiet-period gate)
 
 
 def pick_action(client, history, user_text):
@@ -308,6 +326,8 @@ class ConverseEngine:
             if not facts:
                 return
             remember(facts)
+            if self.face_name and self.face_name != "visitor":
+                remember_person(self.face_name, facts)
             self.memory_text = memory_block(load_memories())
             if self.log:
                 self.log.turn(kind="memory_learned", facts=facts)
@@ -318,11 +338,29 @@ class ConverseEngine:
     def speak(self, user_text, lang_directive=None, search_future=None):
         self.history.append({"role": "user", "content": user_text})
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        person_block = ""
         if self.face_name and self.face_name != "visitor":
             messages.append({"role": "system",
                              "content": f"You are talking to {self.face_name}. Be warm and personal."})
+            person_block = person_summary_block(self.face_name)
+            if person_block:
+                messages.append({"role": "system", "content": person_block})
+        if self.state:
+            self.state.person_summary = person_block
         if self.memory_text:
             messages.append({"role": "system", "content": self.memory_text})
+        try:
+            present_names = sorted({r[1] for r in last_face_results[0]
+                                    if r[1] != "visitor"})
+            kid_block = kids.kid_mode_block(
+                present_names=present_names,
+                facts_by_name={n: load_person_facts(n) for n in present_names},
+                sample_seed=len(self.history),
+            )
+            if kid_block:
+                messages.append({"role": "system", "content": kid_block})
+        except Exception as e:
+            print(f"  [kids] {e}")
         messages += self.history
         snippet = None
         if search_future is not None:
@@ -337,6 +375,13 @@ class ConverseEngine:
                              "content": f"[Live web search result]:\n{snippet}"})
         if lang_directive:
             messages.append({"role": "system", "content": lang_directive})
+
+        if self.state:
+            est_in = sum(len(m["content"]) for m in messages) // 4
+            self.state.tokens_in += est_in
+            self.state.est_cost_usd += est_in * COST_IN_PER_TOKEN
+            self.state.llm_model = (CEREBRAS_MODEL if self._use_cerebras
+                                    else CHAT_MODEL)
 
         action_future = self._pool.submit(
             pick_action, self.client, self.history[:-1], user_text)
@@ -353,6 +398,7 @@ class ConverseEngine:
                 self._use_cerebras = False
                 if self.state:
                     self.state.llm_provider = "groq"
+                    self.state.llm_model = CHAT_MODEL
         else:
             stream = self._groq_stream(messages)
 
@@ -461,6 +507,12 @@ class ConverseEngine:
             _abort.set()
             prod.join(timeout=2)
             self.listener.set_threshold_mode("normal")
+            if self.state:
+                # Count output tokens even when interrupted — whatever text was
+                # played was still generated (and billed) by the provider.
+                est_out = len(" ".join(t for _, t in played)) // 4
+                self.state.tokens_out += est_out
+                self.state.est_cost_usd += est_out * COST_OUT_PER_TOKEN
 
     def _groq_stream(self, messages):
         return self.client.chat.completions.create(
@@ -473,8 +525,10 @@ class ConverseEngine:
         self._drain_queue()
         if self.state:
             self.state.anim_state = "speaking"
-        stream_to_speaker(text, stop_check=self._barge_in_detected)
-        self.listener.set_threshold_mode("normal")
+        try:
+            stream_to_speaker(text, stop_check=self._barge_in_detected)
+        finally:
+            self.listener.set_threshold_mode("normal")
 
     @staticmethod
     def _extract_segment(raw):
@@ -651,15 +705,21 @@ def main():
                 frame_n = 0
                 visitor_visible_since = {}
                 while not face_stop.is_set() and cam is not None:
-                    if waiting_for_name[0] and time.time() - onboarding_started_at[0] > 15.0:
-                        tid_done = onboarding_track_id[0]
-                        waiting_for_name[0] = False
-                        onboarding_track_id[0] = None
+                    timed_out = False
+                    tid_done = None
+                    with onboard_lock:
+                        if (waiting_for_name[0]
+                                and time.time() - onboarding_started_at[0] > 15.0):
+                            tid_done = onboarding_track_id[0]
+                            waiting_for_name[0] = False
+                            onboarding_track_id[0] = None
+                            timed_out = True
+                    if timed_out:
                         if tid_done is not None:
                             onboarded_track_ids[tid_done] = True
                         def _giveup():
-                            if state.anim_state == "speaking":
-                                return
+                            if not speech_lock.acquire(blocking=False):
+                                return   # someone is talking — drop the line
                             state.anim_state = "speaking"
                             try:
                                 listener.mute()
@@ -667,6 +727,7 @@ def main():
                             finally:
                                 listener.unmute()
                                 state.anim_state = "listening"
+                                speech_lock.release()
                         threading.Thread(target=_giveup, daemon=True).start()
                     rgb = cam.frame_rgb()
                     if rgb is None:
@@ -695,8 +756,13 @@ def main():
                             if r[1] == "visitor":
                                 if v_tid not in visitor_visible_since:
                                     visitor_visible_since[v_tid] = now_vis
+                        # Only start onboarding when the robot is idle AND the
+                        # room has been quiet a moment — otherwise a mid-chat
+                        # answer from the CURRENT speaker gets consumed as the
+                        # newcomer's name and the wrong face/name pair is saved.
+                        quiet = now_vis - last_voice_at[0] > 6.0
                         if (not waiting_for_name[0] and cam is not None
-                                and state.anim_state != "speaking"):
+                                and state.anim_state == "listening" and quiet):
                             onb_tid = None
                             for v_tid, first_seen in visitor_visible_since.items():
                                 if onboarded_track_ids.get(v_tid):
@@ -705,13 +771,33 @@ def main():
                                     onb_tid = v_tid
                                     break
                             if onb_tid is not None:
-                                waiting_for_name[0] = True
-                                onboarding_track_id[0] = onb_tid
+                                with onboard_lock:
+                                    waiting_for_name[0] = True
+                                    onboarding_track_id[0] = onb_tid
+                                    onboarding_started_at[0] = time.time()
                                 onboarded_track_ids[onb_tid] = True
-                                onboarding_started_at[0] = time.time()
+                                # Track ids grow forever on a long run; keep the
+                                # dict bounded by dropping the oldest (smallest)
+                                # half once it gets large.
+                                if len(onboarded_track_ids) > 200:
+                                    for old_tid in sorted(onboarded_track_ids)[
+                                            :len(onboarded_track_ids) // 2]:
+                                        onboarded_track_ids.pop(old_tid, None)
                                 log.event(f"  [onboard] visitor tid={onb_tid} — asking name")
-                                _greet_async(
-                                    "Hi! I don't know your name yet. What's your name?")
+                                known_present = sorted(
+                                    {r[1] for r in results if r[1] != "visitor"})
+                                if known_present:
+                                    kname = random.choice(known_present)
+                                    ask = random.choice([
+                                        f"Ooh {kname}, who's your friend? What's your name?",
+                                        f"{kname}, you brought a friend! Hi, what's your name?",
+                                    ])
+                                else:
+                                    ask = random.choice([
+                                        "Hi! I don't know your name yet. What's your name?",
+                                        "Hello there! What's your name, new friend?",
+                                    ])
+                                _greet_async(ask)
                         chosen = None
                         if speaker_track_id[0] is not None:
                             for r in results:
@@ -793,6 +879,8 @@ def main():
                 if state.anim_state == "speaking":
                     return
                 def _say():
+                    if not speech_lock.acquire(blocking=False):
+                        return   # reply/cue in progress — skip, don't overlap
                     state.anim_state = "speaking"
                     try:
                         listener.mute()
@@ -800,6 +888,7 @@ def main():
                     finally:
                         listener.unmute()
                         state.anim_state = "listening"
+                        speech_lock.release()
                 threading.Thread(target=_say, daemon=True).start()
 
             if cam is not None:
@@ -839,6 +928,8 @@ def main():
                         state.pending_say = ""
                         if state.anim_state != "speaking":
                             def _do_say(t):
+                                if not speech_lock.acquire(blocking=False):
+                                    return
                                 state.anim_state = "speaking"
                                 try:
                                     listener.mute()
@@ -846,6 +937,7 @@ def main():
                                 finally:
                                     listener.unmute()
                                     state.anim_state = "listening"
+                                    speech_lock.release()
                             threading.Thread(target=_do_say, args=(say_text,), daemon=True).start()
 
                     ev = events.get()
@@ -861,12 +953,22 @@ def main():
                         if not speech_ok:
                             log.event(f"  [gate] ignored noise — {sm['reject_reason']}")
                             continue
+                        last_voice_at[0] = time.time()
                         if last_face_results[0]:
                             try:
-                                biggest = max(
-                                    last_face_results[0],
-                                    key=lambda r: (r[0][2]-r[0][0])*(r[0][1]-r[0][3]))
-                                speaker_track_id[0] = biggest[3]
+                                # During onboarding, lock gaze onto the person
+                                # being asked for their name (if still in view)
+                                # rather than whoever's face is biggest/closest.
+                                onb_tid = onboarding_track_id[0]
+                                if (waiting_for_name[0] and onb_tid is not None
+                                        and any(r[3] == onb_tid
+                                                for r in last_face_results[0])):
+                                    speaker_track_id[0] = onb_tid
+                                else:
+                                    biggest = max(
+                                        last_face_results[0],
+                                        key=lambda r: (r[0][2]-r[0][0])*(r[0][1]-r[0][3]))
+                                    speaker_track_id[0] = biggest[3]
                             except Exception:
                                 speaker_track_id[0] = None
                         else:
@@ -920,11 +1022,27 @@ def main():
                         lang_known = True
                         prewarm(current_lang)
 
-                        if waiting_for_name[0]:
+                        claimed_onboard = False
+                        with onboard_lock:
+                            if waiting_for_name[0]:
+                                waiting_for_name[0] = False   # claim: give-up can't fire now
+                                claimed_onboard = True
+                        if claimed_onboard:
                             # Pull just the name out of "my name is Tony" etc.;
                             # fall back to the raw (trimmed) transcript if unsure.
                             name_text = (extract_name(groq_client, text)
                                          or text.strip().strip(".,!?;:\"'").strip())
+                            # Current box of the track being onboarded, so the
+                            # RIGHT face gets enrolled when several are in view.
+                            # If the track is gone we pass None — exclude_known
+                            # still protects already-known people.
+                            onb_box = None
+                            onb_tid = onboarding_track_id[0]
+                            if onb_tid is not None:
+                                for r in last_face_results[0]:
+                                    if r[3] == onb_tid:
+                                        onb_box = r[0]
+                                        break
                             frames = []
                             if cam is not None:
                                 for _ in range(3):
@@ -934,26 +1052,31 @@ def main():
                                     time.sleep(0.2)
                             ok_count = 0
                             try:
-                                ok_count = fid.add_person(name_text, frames)
+                                ok_count = fid.add_person_targeted(
+                                    name_text, frames,
+                                    target_box=onb_box, exclude_known=True)
                             except Exception as e:
                                 log.error("onboard_add", e)
-                            listener.mute()
-                            state.anim_state = "speaking"
-                            try:
-                                if ok_count:
-                                    stream_to_speaker(
-                                        f"Nice to meet you, {name_text}! I'll remember you next time!")
-                                    state.known_person_count = (
-                                        len(set(fid._ref_names)) if fid._ref_names else 0)
-                                    log.event(f"  [onboard] added '{name_text}' ({ok_count} encodings)")
-                                else:
-                                    stream_to_speaker(
-                                        "Hmm, I couldn't quite see your face. Let's try again later!")
-                                    log.event(f"  [onboard] failed to add '{name_text}'")
-                            finally:
-                                listener.unmute()
-                                state.anim_state = "listening"
-                            waiting_for_name[0] = False
+                            with speech_lock:
+                                listener.mute()
+                                state.anim_state = "speaking"
+                                try:
+                                    if ok_count:
+                                        stream_to_speaker(
+                                            f"Nice to meet you, {name_text}! I'll remember you next time!")
+                                        state.known_person_count = (
+                                            len(set(fid._ref_names)) if fid._ref_names else 0)
+                                        remember_person(
+                                            name_text,
+                                            ["Met Reachy for the first time today"])
+                                        log.event(f"  [onboard] added '{name_text}' ({ok_count} encodings)")
+                                    else:
+                                        stream_to_speaker(
+                                            "Hmm, I couldn't quite see your face. Let's try again later!")
+                                        log.event(f"  [onboard] failed to add '{name_text}'")
+                                finally:
+                                    listener.unmute()
+                                    state.anim_state = "listening"
                             onboarding_track_id[0] = None
                             speaker_track_id[0] = None
                             anim.set_state(Animator.LISTENING)
@@ -969,10 +1092,14 @@ def main():
                             new_name = detect_rename(groq_client, text)
                             if new_name:
                                 old_name = None
+                                speaker_box = None
                                 for r in last_face_results[0]:
-                                    if r[3] == speaker_track_id[0] and r[1] != "visitor":
-                                        old_name = r[1]
+                                    if r[3] == speaker_track_id[0]:
+                                        speaker_box = r[0]
+                                        if r[1] != "visitor":
+                                            old_name = r[1]
                                         break
+                                speech_lock.acquire()
                                 listener.mute()
                                 state.anim_state = "speaking"
                                 try:
@@ -990,7 +1117,13 @@ def main():
                                         time.sleep(0.15)
                                     ok_count = 0
                                     try:
-                                        ok_count = fid.add_person(new_name, frames)
+                                        # exclude_known=False: a rename is the
+                                        # SAME person correcting their name, so
+                                        # re-enrolling a known face must be OK.
+                                        ok_count = fid.add_person_targeted(
+                                            new_name, frames,
+                                            target_box=speaker_box,
+                                            exclude_known=False)
                                     except Exception as e:
                                         log.error("rename_add", e)
                                     if ok_count:
@@ -1009,6 +1142,7 @@ def main():
                                 finally:
                                     listener.unmute()
                                     state.anim_state = "listening"
+                                    speech_lock.release()
                                 speaker_track_id[0] = None
                                 anim.set_state(Animator.LISTENING)
                                 state.anim_state = "listening"
@@ -1022,8 +1156,11 @@ def main():
                             if _needs_search(text) else None)
                         t1 = time.time()
                         try:
-                            reply = engine.speak(text, lang_directive=directive,
-                                                  search_future=search_future)
+                            # Hold the speech lock for the whole turn so async
+                            # face-greetings skip instead of talking over the reply.
+                            with speech_lock:
+                                reply = engine.speak(text, lang_directive=directive,
+                                                     search_future=search_future)
                         except Exception as e:
                             log.error("llm/tts", e)
                             error_chime()
@@ -1043,16 +1180,18 @@ def main():
                                 recorder.log_text(f"Reachy: {reply}")
 
                         if is_dance and reply is not None:
-                            listener.mute()
-                            try:
-                                do_macarena(mini, dances, emotions, anim, log,
-                                            funny_text=random.choice(DANCE_FUNNIES))
-                            finally:
-                                listener.unmute()
-                                while not events.empty():
-                                    try: events.get_nowait()
-                                    except queue.Empty: break
+                            with speech_lock:
+                                listener.mute()
+                                try:
+                                    do_macarena(mini, dances, emotions, anim, log,
+                                                funny_text=random.choice(DANCE_FUNNIES))
+                                finally:
+                                    listener.unmute()
+                                    while not events.empty():
+                                        try: events.get_nowait()
+                                        except queue.Empty: break
 
+                        last_voice_at[0] = time.time()
                         speaker_track_id[0] = None
                         anim.set_state(Animator.LISTENING)
                         state.anim_state = "listening"
@@ -1061,17 +1200,32 @@ def main():
             except KeyboardInterrupt:
                 log.event("\n  Stopping...")
             finally:
+                # Motors OFF as early as possible — no other cleanup may stand
+                # between us and goto_sleep(), or a failed .stop() leaves the
+                # servos energized (they overheat). The animator must stop
+                # first though: it keeps streaming set_target and would fight
+                # goto_sleep. Every step is isolated for the same reason.
+                try:
+                    anim.stop()
+                except Exception as e:
+                    log.error("anim_stop", e)
+                try:
+                    mini.goto_sleep()
+                except Exception as e:
+                    log.error("goto_sleep", e)
                 face_stop.set()
                 if face_thread:
                     face_thread.join(timeout=1.0)
-                action_pool.shutdown(wait=False)
-                listener.stop()
-                anim.stop()
-                if dashboard:
-                    dashboard.stop()
-                if recorder is not None:
-                    recorder.stop()
-                mini.goto_sleep()
+                for _closer in (lambda: action_pool.shutdown(wait=False),
+                                listener.stop,
+                                (dashboard.stop if dashboard else None),
+                                (recorder.stop if recorder is not None else None)):
+                    if _closer is None:
+                        continue
+                    try:
+                        _closer()
+                    except Exception as e:
+                        log.error("cleanup", e)
 
     except Exception as e:
         log.error("robot/runtime", e)

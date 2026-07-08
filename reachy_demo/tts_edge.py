@@ -80,6 +80,9 @@ def synth_to_file(text: str) -> str:
         t_ffmpeg = time.time() - t1
 
         print(f"  TTS  {t_edge:.2f}s edge  {t_ffmpeg:.2f}s ffmpeg  │ {snippet!r}", flush=True)
+    except BaseException:
+        Path(out).unlink(missing_ok=True)   # don't leak the WAV on failure
+        raise
     finally:
         Path(mp3).unlink(missing_ok=True)
     return out
@@ -105,7 +108,8 @@ def stream_to_speaker(text: str, stop_check=None, on_first_audio=None,
     on_first_audio(): optional callable fired once, when the first audio chunk is
                      about to play (caller can switch to SPEAKING / kill ticks).
 
-    Returns True if it played to completion, False if aborted by stop_check.
+    Returns True if it played to completion, False if aborted by stop_check or
+    if synthesis/playback failed (edge-tts error, ffmpeg died mid-stream).
     """
     snippet = text[:50].replace("\n", " ")
     q: "_queue.Queue" = _queue.Queue()
@@ -135,6 +139,7 @@ def stream_to_speaker(text: str, stop_check=None, on_first_audio=None,
     t0 = time.time()
     first = True
     aborted = False
+    failed = False
     err = None
     try:
         while True:
@@ -149,6 +154,7 @@ def stream_to_speaker(text: str, stop_check=None, on_first_audio=None,
                 break
             if isinstance(item, tuple) and item and item[0] == "ERR":
                 err = item[1]
+                failed = True
                 break
             if first:
                 first = False
@@ -159,6 +165,7 @@ def stream_to_speaker(text: str, stop_check=None, on_first_audio=None,
             try:
                 ff.stdin.write(item)
             except (BrokenPipeError, ValueError):
+                failed = True           # ffmpeg died mid-sentence
                 break
     finally:
         try:
@@ -187,4 +194,4 @@ def stream_to_speaker(text: str, stop_check=None, on_first_audio=None,
                 time.sleep(0.03)
     if err is not None:
         print(f"  TTS  stream error: {err}", flush=True)
-    return not aborted
+    return not aborted and not failed

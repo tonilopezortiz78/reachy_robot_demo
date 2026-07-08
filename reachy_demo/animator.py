@@ -503,8 +503,15 @@ class Animator:
             except Exception:
                 consecutive_errors += 1
                 if consecutive_errors >= 10:
-                    self._stop.set()
-                    break
+                    # Don't kill the loop — the daemon may just be restarting or
+                    # the USB link hiccuping. Back off and keep trying so the
+                    # robot doesn't freeze in its last pose for the session.
+                    print("[animator] 10 consecutive send errors — backing off 2s, retrying",
+                          flush=True)
+                    consecutive_errors = 0
+                    if self._stop.wait(timeout=2.0):
+                        break
+                    continue
 
             time.sleep(dt)
             t += dt

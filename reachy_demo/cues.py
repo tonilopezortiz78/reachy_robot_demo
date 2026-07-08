@@ -16,6 +16,7 @@ Languages not in the table fall back to English.
 import hashlib
 import json
 import random
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -47,6 +48,20 @@ CUE_PHRASES = {
 
 _LISTENING, _THINKING, _REPEAT = 0, 1, 2
 _KIND_INDEX = {"listening": _LISTENING, "thinking": _THINKING, "repeat": _REPEAT}
+
+# Cue WAVs are ~0.5-2 s; if aplay blocks far longer the exclusive speaker device
+# is wedged. Bound the wait so a stuck aplay can never leave the listener muted
+# forever (which would make the robot permanently deaf).
+_PLAY_TIMEOUT_S = 10.0
+
+
+def _wait_or_kill(proc: subprocess.Popen, timeout: float = _PLAY_TIMEOUT_S):
+    """Wait for an aplay proc, killing it if the speaker device is wedged."""
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 # Varied, natural "thinking out loud" fillers spoken the moment the user stops,
 # so the robot acknowledges immediately ("Hmm, let me think...") instead of going
@@ -169,7 +184,9 @@ def cue_wav(kind: str, lang: str) -> str | None:
         try:
             CACHE.mkdir(parents=True, exist_ok=True)
             tmp = synth_to_file(_phrase(kind, lang))
-            Path(tmp).rename(path)
+            # shutil.move, not Path.rename: /tmp is tmpfs, so a rename into
+            # cache/ crosses filesystems and raises EXDEV.
+            shutil.move(str(tmp), str(path))
         except Exception:
             return None
     return str(path)
@@ -183,7 +200,7 @@ def play_cue(kind: str, lang: str, block: bool = False):
     proc = subprocess.Popen(["aplay", "-D", SPEAKER, "-q", wav],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if block:
-        proc.wait()
+        _wait_or_kill(proc)
     return proc
 
 
@@ -213,7 +230,7 @@ def speak_cue(listener, kind: str, lang: str):
                 ["aplay", "-D", SPEAKER, "-q", wav],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            proc.wait()
+            _wait_or_kill(proc)
     finally:
         if listener is not None:
             listener.unmute()
@@ -239,7 +256,8 @@ def _wav_for_text(text: str) -> str | None:
         try:
             CACHE.mkdir(parents=True, exist_ok=True)
             tmp = synth_to_file(text)
-            Path(tmp).rename(path)
+            # shutil.move, not Path.rename: /tmp is tmpfs (cross-device).
+            shutil.move(str(tmp), str(path))
         except Exception:
             return None
     return str(path)
@@ -259,7 +277,7 @@ def speak_thinking(listener, lang: str):
                 ["aplay", "-D", SPEAKER, "-q", wav],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            proc.wait()
+            _wait_or_kill(proc)
     finally:
         if listener is not None:
             listener.unmute()

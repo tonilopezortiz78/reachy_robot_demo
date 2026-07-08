@@ -69,11 +69,11 @@ class CameraHub:
             if not ok:
                 time.sleep(0.02)
                 continue
-            if self.overlay is not None:
-                try:
-                    frame = self.overlay(frame, self.last_boxes)
-                except Exception:
-                    pass
+            # Store the CLEAN frame — overlay (boxes/name labels) is applied
+            # only in mjpeg_bytes() for the dashboard. Drawing into the stored
+            # frame contaminated frame_rgb()/frame_bgr(), so face recognition
+            # and enrollment saw the previous detection's boxes painted over
+            # the faces.
             with self._lock:
                 self._frame = frame
                 self._jpg = None
@@ -101,6 +101,13 @@ class CameraHub:
             return None
         if j is not None:
             return j
+        if self.overlay is not None:
+            # Draw boxes on a COPY so the stored frame stays clean for
+            # recognition consumers (frame_rgb/frame_bgr).
+            try:
+                f = self.overlay(f.copy(), self.last_boxes)
+            except Exception:
+                pass
         ok, buf = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 75])
         if not ok:
             return None

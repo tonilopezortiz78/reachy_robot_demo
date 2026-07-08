@@ -1,6 +1,8 @@
 """
 reachy_demo/daemon.py — Start and stop the reachy-mini-daemon process.
 """
+import os
+import signal
 import socket
 import subprocess
 import time
@@ -36,10 +38,27 @@ def start_daemon() -> subprocess.Popen:
 
 
 def stop_daemon(proc: subprocess.Popen) -> None:
-    """Terminate the daemon process, killing it if it doesn't exit within 8 s."""
-    proc.terminate()
+    """Terminate the daemon process, killing it if it doesn't exit within 8 s.
+
+    The daemon is launched with start_new_session=True, so it owns a whole
+    process group — signal the group, not just the parent, or its children
+    keep running (and holding the motors/port). Falls back to plain
+    terminate/kill on the parent if group signalling isn't possible.
+    """
+    def _signal_group(sig) -> bool:
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+            return True
+        except ProcessLookupError:
+            return True   # group already gone — nothing left to signal
+        except OSError:
+            return False  # fall back to signalling the parent only
+
+    if not _signal_group(signal.SIGTERM):
+        proc.terminate()
     try:
         proc.wait(timeout=8)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        if not _signal_group(signal.SIGKILL):
+            proc.kill()
         proc.wait()

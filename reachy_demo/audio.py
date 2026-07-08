@@ -674,12 +674,26 @@ def thinking_cue():
 # ── WAV playback ──────────────────────────────────────────────────────────────
 
 def play_wav_blocking(path: str):
-    """Play a WAV file on the robot speaker and block until done."""
+    """Play a WAV file on the robot speaker and block until done.
+
+    The wait is bounded (WAV duration + margin) so a wedged/busy speaker device
+    can never hang the caller forever — on timeout the aplay is killed.
+    """
+    try:
+        with wave.open(path, "rb") as w:
+            duration = w.getnframes() / float(w.getframerate() or 1)
+        timeout = duration + 10.0
+    except Exception:
+        timeout = 30.0
     proc = subprocess.Popen(
         ["aplay", "-D", SPEAKER, "-q", path],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    proc.wait()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
     time.sleep(0.06)
 
 # ── VAD capture ───────────────────────────────────────────────────────────────

@@ -275,7 +275,9 @@ def stream_chat(
     `system` is prepended as the system message.
     NOTE: max_tokens is hardcoded to 70 and cannot be overridden by callers.
     """
-    stream = client.chat.completions.create(
+    # with_options(timeout=...) bounds connect/read stalls so a dead connection
+    # can't freeze the robot mid-reply; per-chunk reads of the stream inherit it.
+    stream = client.with_options(timeout=20.0).chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}] + messages,
         max_tokens=70,

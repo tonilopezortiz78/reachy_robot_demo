@@ -10,7 +10,10 @@ on the LiveState that the main demo loop drains.
 Endpoints:
     GET  /          — full HTML dashboard (single page, inline CSS/JS)
     GET  /video     — MJPEG live stream (multipart/x-mixed-replace; boundary=frame)
-    GET  /status    — JSON snapshot of LiveState (polled by the page every 500 ms)
+    GET  /status    — JSON snapshot of LiveState (kept for external tools; the
+                      page only polls it as a fallback when the WebSocket is down)
+    WS   /ws        — pushes the LiveState snapshot as JSON text frames ~8-10x/s,
+                      but only when the snapshot changed since the last push
     POST /api/wake  — sets state.pending_wake  -> {"ok": true}
     POST /api/sleep — sets state.pending_sleep -> {"ok": true}
     POST /api/say   — JSON {text: "..."} -> state.request_say -> {"ok": true}
@@ -25,11 +28,13 @@ Threading model:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 import time
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from starlette.responses import HTMLResponse, StreamingResponse
 
 if TYPE_CHECKING:
@@ -66,9 +71,10 @@ body {
   transition: background 0.6s ease;
 }
 /* Ambient background tint keyed to the robot's anim_state (set via JS as
-   body[data-state], driven by /status polling). Falls back to the default
-   --bg above when data-state is absent/unrecognised. Kept dark and slightly
-   desaturated so card text stays readable in every state. */
+   body[data-state], driven by the /ws WebSocket push, or /status polling
+   as fallback). Falls back to the default --bg above when data-state is
+   absent/unrecognised. Kept dark and slightly desaturated so card text
+   stays readable in every state. */
 body[data-state="idle"]      { background: #0f172a; }
 body[data-state="listening"] { background: #14532d; }
 body[data-state="thinking"]  { background: #78350f; }
@@ -195,6 +201,12 @@ header .subtitle {
 .chip-groq { background: rgba(210,153,34,0.15); color: var(--orange); border: 1px solid var(--orange); }
 .chip-cerebras { background: rgba(188,140,255,0.15); color: var(--purple); border: 1px solid var(--purple); }
 .conf { color: var(--muted); font-size: 0.8rem; font-family: "SF Mono", "Cascadia Code", monospace; }
+.person-summary {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .latency-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -350,6 +362,29 @@ button:active { transform: scale(0.97); }
       <div class="card lat-card"><span class="lat-label">Total</span><span class="lat-val" id="lat-total">0.00s</span></div>
     </div>
     <div class="card">
+      <h2>Costs</h2>
+      <div class="status-row">
+        <span class="status-label">Model</span>
+        <span class="status-value mono" id="llm-model">&mdash;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Tokens In</span>
+        <span class="status-value mono" id="tokens-in">0</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Tokens Out</span>
+        <span class="status-value mono" id="tokens-out">0</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Est. Cost</span>
+        <span class="status-value mono" id="est-cost">$0.0000</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Person</h2>
+      <div class="person-summary" id="person-summary">&mdash;</div>
+    </div>
+    <div class="card">
       <h2>Controls</h2>
       <div class="controls">
         <div class="btn-row">
@@ -371,6 +406,9 @@ var connOK = true;
 var pollTimer = null;
 var pollDelay = 500;
 var failCount = 0;
+var ws = null;
+var wsActive = false;
+var wsRetryTimer = null;
 var vid = document.getElementById("video-feed");
 var vidOK = true;
 var vidRetryTimer = null;
@@ -437,18 +475,18 @@ document.getElementById("say-input").addEventListener("keydown", function(e) {
   if (e.key === "Enter") document.getElementById("btn-say").click();
 });
 
-function poll() {
-  fetch("/status")
-    .then(function(r) { return r.json(); })
-    .then(function(s) {
-      failCount = 0;
-      pollDelay = 500;
-      if (!connOK) {
-        connOK = true;
-        setConnBanner(false);
-        stopDots();
-        if (!vidOK) reconnectVideo();
-      }
+function connectionUp() {
+  failCount = 0;
+  pollDelay = 500;
+  if (!connOK) {
+    connOK = true;
+    setConnBanner(false);
+    stopDots();
+    if (!vidOK) reconnectVideo();
+  }
+}
+
+function render(s) {
       var dot = document.getElementById("robot-dot");
       dot.className = "dot " + (s.robot_online ? "dot-on" : "dot-off");
       document.getElementById("robot-status").textContent = s.robot_online ? "Online" : "Offline";
@@ -491,6 +529,28 @@ function poll() {
       document.getElementById("btn-mute").textContent = muted ? "Unmute" : "Mute";
 
       document.getElementById("rec").classList.toggle("active", s.anim_state === "speaking");
+
+      document.getElementById("llm-model").textContent = s.llm_model || "—";
+      document.getElementById("tokens-in").textContent = s.tokens_in;
+      document.getElementById("tokens-out").textContent = s.tokens_out;
+      document.getElementById("est-cost").textContent = "$" + s.est_cost_usd.toFixed(4);
+      document.getElementById("person-summary").textContent = s.person_summary || "—";
+}
+
+/* --- /status polling: fallback transport when the WebSocket is down --- */
+function startPolling() {
+  if (!pollTimer) pollTimer = setTimeout(poll, 100);
+}
+function stopPolling() {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+}
+function poll() {
+  if (wsActive) { pollTimer = null; return; }
+  fetch("/status")
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      connectionUp();
+      render(s);
     })
     .catch(function() {
       failCount++;
@@ -502,19 +562,63 @@ function poll() {
       pollDelay = Math.min(failCount * 500, 3000);
     })
     .finally(function() {
-      pollTimer = setTimeout(poll, pollDelay);
+      pollTimer = wsActive ? null : setTimeout(poll, pollDelay);
     });
+}
+
+/* --- WebSocket: primary transport; server pushes snapshots on change --- */
+function connectWS() {
+  if (ws) return;
+  if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+  var sock;
+  try {
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    sock = new WebSocket(proto + "//" + location.host + "/ws");
+  } catch (e) {
+    wsDown();
+    return;
+  }
+  ws = sock;
+  sock.onopen = function() {
+    wsActive = true;
+    connectionUp();
+    stopPolling();
+  };
+  sock.onmessage = function(ev) {
+    var s;
+    try { s = JSON.parse(ev.data); } catch (e) { return; }
+    connectionUp();
+    render(s);
+  };
+  sock.onerror = function() {
+    try { sock.close(); } catch (e) {}
+  };
+  sock.onclose = function() {
+    if (ws === sock) ws = null;
+    wsActive = false;
+    wsDown();
+  };
+}
+function wsDown() {
+  startPolling();
+  if (!wsRetryTimer) {
+    wsRetryTimer = setTimeout(function() {
+      wsRetryTimer = null;
+      connectWS();
+    }, 5000);
+  }
 }
 
 function visibilityHack() {
   if (document.visibilityState === "visible") {
     if (!vidOK) reconnectVideo();
-    if (!pollTimer) { pollTimer = setTimeout(poll, 200); }
+    if (!ws && !wsActive) connectWS();
+    if (!wsActive) startPolling();
   }
 }
 document.addEventListener("visibilitychange", visibilityHack);
 
-pollTimer = setTimeout(poll, 100);
+connectWS();
 </script>
 </body>
 </html>"""
@@ -552,6 +656,25 @@ class WebDashboard:
         @self.app.get("/status")
         def _status() -> dict:
             return self.state.snapshot()
+
+        @self.app.websocket("/ws")
+        async def _ws(websocket: WebSocket) -> None:
+            # Push the state snapshot as JSON text frames ~8-10x/s, but only
+            # when the serialized snapshot changed since the last push. Each
+            # client gets its own coroutine, so simultaneous clients are fine.
+            await websocket.accept()
+            last: str | None = None
+            try:
+                while not self._stop_flag.is_set():
+                    payload = json.dumps(self.state.snapshot())
+                    if payload != last:
+                        await websocket.send_text(payload)
+                        last = payload
+                    await asyncio.sleep(0.12)
+            except WebSocketDisconnect:
+                pass  # client closed the tab / navigated away — normal
+            except Exception:
+                pass  # connection reset mid-send etc. — not worth a traceback
 
         @self.app.post("/api/wake")
         def _wake() -> dict:

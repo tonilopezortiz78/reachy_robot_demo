@@ -64,6 +64,7 @@ _ARC_FACE_REF = np.array([
 # Cosine-distance acceptance threshold (~0.40 → ~99% same-person on SFace LFW).
 DEFAULT_TOLERANCE = 0.40
 RECOG_INTERVAL = 15   # frames between recognition runs per track
+ENROLL_IOU_MIN = 0.15  # min IoU vs target_box for targeted enrolment (person may shift)
 
 RELATION_NORM = np.linalg.norm(_ARC_FACE_REF, axis=None) or 1.0
 
@@ -102,6 +103,17 @@ def _align_faces(frame_bgr: np.ndarray, landmarks_per_face: list) -> list[np.nda
             continue
         out.append(cv2.warpAffine(frame_bgr, M, (112, 112), borderValue=0))
     return out
+
+
+def _iou(box_a: tuple, box_b: tuple) -> float:
+    """IoU of two (x1,y1,x2,y2) boxes — same math as _IoUTracker.update."""
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter = max(0, min(ax2, bx2) - max(ax1, bx1)) * \
+            max(0, min(ay2, by2) - max(ay1, by1))
+    union = (ax2 - ax1) * (ay2 - ay1) + \
+            (bx2 - bx1) * (by2 - by1) - inter
+    return inter / union if union > 0 else 0.0
 
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -436,6 +448,128 @@ class FaceIdentifier:
                     self._ref_embs = stacked
                 self._ref_names.extend([name] * added)
             return added
+
+    def add_person_targeted(self, name: str, rgb_frames: list,
+                            target_box=None, exclude_known: bool = True) -> int:
+        """Like add_person, but enrols the RIGHT face when several are in view.
+
+        Per frame, candidate faces are ranked:
+          - target_box given ((x1,y1,x2,y2) in identify() pixel coords) —
+            best IoU with target_box first, requiring IoU >= ENROLL_IOU_MIN;
+            if no face passes the bar, fall back to largest-first.
+          - target_box None — largest-first (add_person behaviour).
+        With exclude_known=True each candidate is encoded and checked against
+        the existing roster (same measure/threshold as _recognize_box); a face
+        that matches a known person is rejected and the next candidate tried —
+        so a bystander like Tony can never be re-enrolled under a new name.
+
+        dlib fallback (documented simplification): full-res HOG detect, boxes
+        converted to (x1,y1,x2,y2), same IoU/largest ranking, roster check via
+        face_distance < 0.52 as in _recognize_box.
+
+        Saves accepted frames to faces/<slug>/ and appends embeddings to the
+        in-memory roster like add_person. The folder is created lazily, so a
+        fully-rejected enrolment leaves no empty directory. Returns count of
+        usable encodings. Thread-safe via self._lock.
+        """
+        with self._lock:
+            pname = name.lower().replace(" ", "_")
+            pdir = self.faces_dir / pname
+            new_embs = []
+            added = 0
+            for rgb_frame in rgb_frames:
+                ts = int(time.time() * 1000)
+                fname = pdir / f"{pname}_{ts}_{added}.jpg"
+                if self._use_modern:
+                    bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                    h, w = bgr.shape[:2]
+                    if (w, h) != tuple(self._yunet.getInputSize()):
+                        self._yunet.setInputSize((w, h))
+                    _, faces = self._yunet.detect(bgr)
+                    if faces is None or len(faces) == 0:
+                        continue
+                    cands = [((int(f[0]), int(f[1]),
+                               int(f[0] + f[2]), int(f[1] + f[3])),
+                              f[4:14].reshape(5, 2)) for f in faces]
+                    ranked = self._rank_candidates(cands, target_box)
+                    for box, raw_lm in ranked:
+                        lm = _alignment_landmarks(raw_lm)
+                        aligned = _align_faces(bgr, [lm])
+                        if not aligned:
+                            continue
+                        emb = self._encode_sface(aligned[0])
+                        if emb is None:
+                            continue
+                        if exclude_known and self._matches_roster(emb):
+                            continue  # known person — try next candidate
+                        pdir.mkdir(parents=True, exist_ok=True)
+                        cv2.imwrite(str(fname), bgr)
+                        new_embs.append(emb)
+                        added += 1
+                        break
+                else:
+                    try:
+                        import face_recognition
+                    except ImportError:
+                        break
+                    locs = face_recognition.face_locations(rgb_frame, model="hog")
+                    if not locs:
+                        continue
+                    # (top,right,bottom,left) -> (x1,y1,x2,y2)
+                    cands = [((loc[3], loc[0], loc[1], loc[2]), loc)
+                             for loc in locs]
+                    ranked = self._rank_candidates(cands, target_box)
+                    accepted = None
+                    for box, loc in ranked:
+                        encs = face_recognition.face_encodings(rgb_frame, [loc])
+                        if not encs:
+                            continue
+                        if exclude_known and self._matches_roster(encs[0]):
+                            continue
+                        accepted = encs[0]
+                        break
+                    if accepted is None:
+                        continue
+                    pdir.mkdir(parents=True, exist_ok=True)
+                    bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(str(fname), bgr)
+                    new_embs.append(accepted)
+                    added += 1
+            if new_embs:
+                stacked = np.asarray(new_embs, dtype=np.float32)
+                if self._ref_embs is not None and len(self._ref_embs) > 0:
+                    self._ref_embs = np.vstack([self._ref_embs, stacked])
+                else:
+                    self._ref_embs = stacked
+                self._ref_names.extend([name] * added)
+            return added
+
+    @staticmethod
+    def _rank_candidates(cands: list, target_box) -> list:
+        """Order (box, payload) candidates for targeted enrolment: best IoU
+        with target_box first (>= ENROLL_IOU_MIN only), falling back to
+        largest-area-first if no target or nothing passes the bar."""
+        if target_box is not None:
+            scored = [(c, _iou(c[0], target_box)) for c in cands]
+            hits = [c for c, s in sorted(scored, key=lambda p: p[1], reverse=True)
+                    if s >= ENROLL_IOU_MIN]
+            if hits:
+                return hits
+        return sorted(cands, key=lambda c: (c[0][2] - c[0][0]) *
+                      (c[0][3] - c[0][1]), reverse=True)
+
+    def _matches_roster(self, emb: np.ndarray) -> bool:
+        """True if emb matches an already-enrolled person, using the same
+        measure/threshold as _recognize_box (cosine > self.tol for SFace,
+        face_distance < 0.52 for the dlib fallback)."""
+        if self._ref_embs is None or len(self._ref_embs) == 0:
+            return False
+        if self._use_modern:
+            sims = np.array([_cosine(emb, ref) for ref in self._ref_embs])
+            return float(np.max(sims)) > self.tol
+        import face_recognition
+        dists = face_recognition.face_distance(self._ref_embs, emb)
+        return float(np.min(dists)) < 0.52
 
     def remove_person(self, name: str) -> int:
         """Remove a person from the roster (in-memory + on-disk).

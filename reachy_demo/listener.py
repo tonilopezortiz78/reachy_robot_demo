@@ -72,7 +72,8 @@ class ContinuousListener:
         self._barge_in_frames = barge_in_frames
         self._max_recover = max_recover
         self._stop = threading.Event()
-        self._muted = False
+        self._mute_depth = 0            # re-entrant mute counter (see mute())
+        self._mute_lock = threading.Lock()
         self._threshold_mode = "normal"
         self._consecutive_triggers = 0
         self._in_speech = False
@@ -90,11 +91,24 @@ class ContinuousListener:
 
     def mute(self):
         """Discard mic input (used while the robot plays a cue, so it never
-        captures its own voice through speaker→mic bleed)."""
-        self._muted = True
+        captures its own voice through speaker→mic bleed).
+
+        Re-entrant: multiple threads (greeting, cue, main reply) each mute
+        around their own playback. A depth counter means the mic only unmutes
+        when the LAST speaker finishes — a plain boolean let the first thread
+        to finish unmute while another was still playing, so the robot heard
+        itself."""
+        with self._mute_lock:
+            self._mute_depth += 1
 
     def unmute(self):
-        self._muted = False
+        with self._mute_lock:
+            self._mute_depth = max(0, self._mute_depth - 1)
+
+    @property
+    def _muted(self) -> bool:
+        with self._mute_lock:
+            return self._mute_depth > 0
 
     def set_threshold_mode(self, mode: str):
         assert mode in ("normal", "barge_in")
@@ -246,5 +260,16 @@ class ContinuousListener:
                         self._speech_buf = []
                         self._consecutive_triggers = 0
         finally:
-            arecord.terminate()
-            arecord.wait()
+            # Bounded shutdown — a wedged pacat that ignores SIGTERM must not
+            # block this thread forever (it would leak the mic-holding process).
+            try:
+                arecord.terminate()
+                arecord.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    arecord.kill()
+                    arecord.wait(timeout=1.0)
+                except Exception:
+                    pass
+            except Exception:
+                pass
