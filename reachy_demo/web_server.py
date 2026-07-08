@@ -63,7 +63,16 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   min-height: 100vh;
   padding: 20px;
+  transition: background 0.6s ease;
 }
+/* Ambient background tint keyed to the robot's anim_state (set via JS as
+   body[data-state], driven by /status polling). Falls back to the default
+   --bg above when data-state is absent/unrecognised. Kept dark and slightly
+   desaturated so card text stays readable in every state. */
+body[data-state="idle"]      { background: #0f172a; }
+body[data-state="listening"] { background: #14532d; }
+body[data-state="thinking"]  { background: #78350f; }
+body[data-state="speaking"]  { background: #1e3a5f; }
 header { text-align: center; margin-bottom: 24px; }
 header h1 { font-size: 1.5rem; font-weight: 600; }
 header .subtitle {
@@ -365,6 +374,8 @@ var failCount = 0;
 var vid = document.getElementById("video-feed");
 var vidOK = true;
 var vidRetryTimer = null;
+var ANIM_STATES = ["idle", "listening", "thinking", "speaking"];
+document.body.dataset.state = "idle";
 
 function post(path, body) {
   return fetch(path, {
@@ -442,9 +453,12 @@ function poll() {
       dot.className = "dot " + (s.robot_online ? "dot-on" : "dot-off");
       document.getElementById("robot-status").textContent = s.robot_online ? "Online" : "Offline";
 
+      var animState = ANIM_STATES.indexOf(s.anim_state) !== -1 ? s.anim_state : "idle";
+      document.body.dataset.state = animState;
+
       var badge = document.getElementById("anim-badge");
       badge.textContent = s.anim_state;
-      badge.className = "badge badge-" + s.anim_state;
+      badge.className = "badge badge-" + animState;
 
       document.getElementById("current-lang").textContent = s.current_lang;
       document.getElementById("last-user").textContent = s.last_user || "\u2014";

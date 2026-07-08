@@ -1,10 +1,10 @@
 """
 reachy_demo/cerebras_client.py — optional low-latency LLM accelerator.
 
-Cerebras runs the SAME Llama-4-scout model as Groq at ~2,000 tok/s (vs Groq's
-~450 tok/s). Same OpenAI-compatible streaming API — we just point the `openai`
-SDK at their endpoint. The demo tries Cerebras first; if the API key is
-missing or the request fails, it transparently falls back to the Groq path.
+Cerebras runs Llama models at ~2,000+ tok/s (vs Groq's ~450 tok/s). Same
+OpenAI-compatible streaming API — we just point the `openai` SDK at their
+endpoint. The demo tries Cerebras first; if the API key is missing or the
+request fails, it transparently falls back to the Groq path.
 
 Setup:
     Get a free key at  https://cloud.cerebras.ai/
@@ -23,7 +23,16 @@ except ImportError:
     _OAClient = None
 
 CEREBRAS_BASE = "https://api.cerebras.ai/v1"
-MODEL = "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+# NOTE: "meta-llama/Llama-4-Scout-17B-16E-Instruct" (Groq's HF-style id) 404s
+# on Cerebras — Llama-4-Scout was deprecated on Cerebras on 2025-11-03 and is
+# no longer served there. Probed this key's actual catalog (client.models.list)
+# on 2026-07-08: only gpt-oss-120b, gemma-4-31b, zai-glm-4.7 are available.
+# gpt-oss-120b and zai-glm-4.7 are reasoning models — they stream their thoughts
+# to a separate channel and return EMPTY .delta.content for short replies, so
+# they're unusable for this one-liner robot. gemma-4-31b returns clean text at
+# ~0.4s TTFT — the working fast choice. If it 404s later, re-probe with
+# client.models.list(); the code falls back to Groq Llama-4-Scout automatically.
+MODEL = "gemma-4-31b"
 
 
 def load_cerebras_key(root: Path | None = None) -> str | None:
@@ -52,15 +61,21 @@ def make_client(root: Path | None = None):
 
 def stream_chat(client, messages, *, model=MODEL, max_tokens=88, temperature=0.80):
     """Drop-in replacement for groq_client.stream_chat.
-    Yields text deltas. The caller handles the empty-choice case."""
+    The request is issued EAGERLY here so auth/model errors raise at call time
+    (letting the caller fall back to Groq) rather than deep inside iteration.
+    Returns a generator yielding text deltas; caller handles the empty-choice case."""
     stream = client.chat.completions.create(
         model=model, messages=messages,
         max_tokens=max_tokens, temperature=temperature, stream=True,
     )
-    for chunk in stream:
-        if not chunk.choices:
-            continue
-        yield chunk.choices[0].delta.content or ""
+
+    def _iter():
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            yield chunk.choices[0].delta.content or ""
+
+    return _iter()
 
 
 def has_key(root: Path | None = None) -> bool:

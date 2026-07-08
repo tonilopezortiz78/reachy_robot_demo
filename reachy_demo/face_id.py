@@ -26,6 +26,7 @@ Public API:
     fid.identify_typical_box_count_in_box_count -> heuristic ≈ 1
 """
 
+import shutil
 import threading
 import time
 import urllib.request
@@ -435,6 +436,45 @@ class FaceIdentifier:
                     self._ref_embs = stacked
                 self._ref_names.extend([name] * added)
             return added
+
+    def remove_person(self, name: str) -> int:
+        """Remove a person from the roster (in-memory + on-disk).
+
+        Used to correct a mis-saved name (e.g. the visitor says "my name is
+        X" but a previous onboarding stored a bad name). Removes every
+        roster entry whose stored name matches `name` case-insensitively,
+        deletes the on-disk faces/<slug>/ directory, and resets the tracker
+        + recognition cache so a just-renamed face is re-recognized fresh
+        rather than served the stale cached name.
+
+        Returns the number of embeddings removed. Thread-safe via self._lock.
+        """
+        with self._lock:
+            target = name.strip().lower()
+            slug = target.replace(" ", "_")
+
+            keep_idx = [
+                i for i, n in enumerate(self._ref_names)
+                if n.strip().lower() != target
+            ]
+            removed = len(self._ref_names) - len(keep_idx)
+
+            if keep_idx:
+                if self._ref_embs is not None:
+                    self._ref_embs = self._ref_embs[keep_idx]
+                self._ref_names = [self._ref_names[i] for i in keep_idx]
+            else:
+                self._ref_embs = np.zeros((0, 128), dtype=np.float32)
+                self._ref_names = []
+
+            pdir = self.faces_dir / slug
+            if pdir.exists():
+                shutil.rmtree(pdir, ignore_errors=True)
+
+            self._tracker = _IoUTracker()
+            self._cache = {}
+
+            return removed
 
     def _yk_det(self, rgb_frame: np.ndarray):
         bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)

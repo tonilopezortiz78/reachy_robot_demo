@@ -97,6 +97,8 @@ GESTURE_TEMPLATES = [
     (2,  0.00,  0.00,  0.00, 0.00,  0.50, -0.50, 0.20),  # V-shape (split)
     (2,  0.00,  0.00,  0.00, 0.00, -0.20,  0.50, 0.20),  # inverted V
     (1,  0.00,  0.00,  0.00, 0.00,  0.20, -0.20, 0.10),  # tiny tuck
+    (2,  0.00,  0.00,  0.00, 0.00,  0.60,  0.60, 0.10),  # quick double perk (sharp, both up)
+    (1,  0.00,  0.00,  0.00, 0.00,  0.35, -0.45, 0.14),  # fast wiggle — antennas cross
     # head tilts — curious
     (2,  0.00,  0.00,  0.14, 0.00,  0.00,  0.00, 0.40),  # tilt L
     (2,  0.00,  0.00, -0.14, 0.00,  0.00,  0.00, 0.40),  # tilt R
@@ -137,12 +139,14 @@ ANTENNA_NEUTRAL = {   # gentle pull toward this when in this state
     "speaking":   0.3,
 }
 ANTENNA_LIVENESS = {
-    "idle":      {"target_lo": -0.30, "target_hi":  0.35, "interval_lo": 0.20, "interval_hi": 0.50},
+    "idle":      {"target_lo": -0.38, "target_hi":  0.45, "interval_lo": 0.15, "interval_hi": 0.38},
     # listening: slow, small antenna drift so the servos are nearly silent while
-    # the visitor talks (longer intervals = fewer moves = less mic noise).
-    "listening": {"target_lo":  0.25, "target_hi":  0.50, "interval_lo": 0.60, "interval_hi": 1.20},
-    "thinking":  {"target_lo": -0.15, "target_hi":  0.45, "interval_lo": 0.15, "interval_hi": 0.35},
-    "speaking":  {"target_lo": -0.05, "target_hi":  0.55, "interval_lo": 0.08, "interval_hi": 0.22},
+    # the visitor talks (longer intervals = fewer moves = less mic noise). Widened
+    # and shortened slightly vs. before — antennas can be livelier than the head
+    # even while listening — but still the calmest of the four states.
+    "listening": {"target_lo":  0.20, "target_hi":  0.55, "interval_lo": 0.50, "interval_hi": 1.00},
+    "thinking":  {"target_lo": -0.22, "target_hi":  0.55, "interval_lo": 0.12, "interval_hi": 0.28},
+    "speaking":  {"target_lo": -0.12, "target_hi":  0.65, "interval_lo": 0.06, "interval_hi": 0.17},
 }
 ANTENNA_TAU = 0.05         # seconds — smoothing toward the new target
 ANTENNA_NEUTRAL_TAU = 1.2  # seconds — slow pull back to state neutral (avoids drift)
@@ -327,6 +331,7 @@ class Animator:
         self._moves    = moves_library  # RecordedMoves HF library, optional
         self._gesture_active = False
         self._gaze_bias = (0.0, 0.0, 0.0)   # (yaw, pitch, body_yaw) radians — head-tracking offset
+        self._ant_bias  = 0.0  # additive antenna offset (radians), both antennas
         self._thinking = _ThinkingAnimation()
         self._lock     = threading.Lock()
         self._stop     = threading.Event()
@@ -346,6 +351,13 @@ class Animator:
         by = max(-0.20, min(0.20, body_yaw))
         with self._lock:
             self._gaze_bias = (y, p, by)
+
+    def set_antenna_bias(self, level: float) -> None:
+        """Additive antenna offset on top of base+aliveness (e.g. +perk when a
+        face is present, -droop when alone). Clamped so it can't peg the servos."""
+        lv = max(-0.45, min(0.55, level))
+        with self._lock:
+            self._ant_bias = lv
 
     def pause(self):
         """Pause the animation loop — hand full servo control to caller."""
@@ -421,8 +433,8 @@ class Animator:
                     y  =  _s(0.20, 0.22, t) + _s(0.07, 0.53, t)
                     r  =  _s(0.06, 0.17, t) + _s(0.02, 0.41, t)
                     by =  _s(0.15, 0.13, t) + _s(0.04, 0.31, t)
-                    al =  0.20 + _s(0.15, 0.35, t)
-                    ar =  0.20 + _s(0.15, 0.35, t, phase=1.2)
+                    al =  0.20 + _s(0.21, 0.35, t) + _s(0.05, 0.90, t, phase=0.3)
+                    ar =  0.20 + _s(0.21, 0.35, t, phase=1.2) + _s(0.05, 0.90, t, phase=1.8)
 
                 elif state == self.LISTENING:
                     # Nearly STILL while the visitor talks — small, slow motion so
@@ -433,9 +445,10 @@ class Animator:
                     y  =  _s(0.05, 0.16, t)
                     r  =  0.05 + _s(0.015, 0.14, t)
                     by =  _s(0.04, 0.10, t)
-                    # Antennas: held perked with only a whisper of movement
-                    al =  0.45 + _s(0.05, 0.30, t)
-                    ar =  0.40 + _s(0.05, 0.30, t, phase=math.pi * 0.8)
+                    # Antennas: held perked with a touch more life than before —
+                    # still a whisper of movement, servos stay quiet for the mic.
+                    al =  0.45 + _s(0.06, 0.30, t)
+                    ar =  0.40 + _s(0.06, 0.30, t, phase=math.pi * 0.8)
 
                 elif state == self.THINKING:
                     # Pose library: drifts between 10 contemplative poses with smooth blends
@@ -445,8 +458,8 @@ class Animator:
                     y  = by_ + _s(0.030, 0.44, t)
                     r  = br  + _s(0.020, 0.60, t)
                     by = bby + _s(0.012, 0.36, t)
-                    al = bal + _s(0.07, 1.25, t)
-                    ar = bar + _s(0.07, 1.25, t, phase=math.pi)
+                    al = bal + _s(0.10, 1.25, t)
+                    ar = bar + _s(0.10, 1.25, t, phase=math.pi)
 
                 elif state == self.SPEAKING:
                     # Very expressive: 3-harmonic head bobs, body engagement, lively antennas
@@ -454,9 +467,10 @@ class Animator:
                     y  =  _s(0.18, 0.34, t) + _s(0.07, 0.80, t) + _s(0.02, 1.85, t)
                     r  =  _s(0.07, 0.24, t) + _s(0.03, 0.57, t)
                     by =  _s(0.18, 0.19, t) + _s(0.06, 0.46, t)
-                    # Excited antenna flutter — both move but out of phase for liveliness
-                    al =  0.32 + _s(0.32, 0.68, t) + _s(0.08, 1.75, t)
-                    ar =  0.32 + _s(0.32, 0.68, t, phase=math.pi * 0.65) + _s(0.08, 1.75, t, phase=math.pi)
+                    # Excited antenna flutter — three out-of-phase harmonics per
+                    # antenna so the two move more independently/organically.
+                    al =  0.32 + _s(0.42, 0.68, t) + _s(0.10, 1.75, t) + _s(0.04, 3.10, t, phase=0.5)
+                    ar =  0.32 + _s(0.42, 0.68, t, phase=math.pi * 0.65) + _s(0.10, 1.75, t, phase=math.pi) + _s(0.04, 3.10, t, phase=2.0)
 
                 else:
                     p = y = r = by = al = ar = 0.0
@@ -473,9 +487,12 @@ class Animator:
 
                 with self._lock:
                     gy, gp, gby = self._gaze_bias
+                    ab = self._ant_bias
                 y  += gy
                 p  += gp
                 by += gby
+                al += ab
+                ar += ab
 
                 if self.mirror:
                     _send(self.mini, p, -y, -r, -by, al, ar)

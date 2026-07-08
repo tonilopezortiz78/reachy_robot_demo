@@ -59,6 +59,7 @@ from reachy_demo.groq_client import (
 )
 from reachy_demo.live_state import LiveState
 from reachy_demo.memory import extract_memories, load_memories, memory_block, remember
+from reachy_demo.recorder import DiagnosticRecorder
 from reachy_demo.session_log import SessionLogger
 from reachy_demo.search import web_search
 from reachy_demo.speech_gate import is_real_speech
@@ -95,6 +96,7 @@ CAM_W, CAM_H = 640, 360
 YAW_GAIN, PITCH_GAIN, BODY_GAIN = 0.55, 0.28, 0.80
 HEAD_ALPHA, BODY_ALPHA = 0.18, 0.06
 LOST_TIMEOUT = 2.5
+ARRIVAL_GAP_S = 5.0        # scene empty this long → next face is a "fresh arrival"
 ANT_EXCITED, ANT_IDLE, ANT_DROOP = 0.70, 0.15, -0.25
 
 GESTURE_NAMES = "|".join(re.escape(n) for n in NAMED_GESTURES.keys())
@@ -216,6 +218,66 @@ def pick_action(client, history, user_text):
         return word if word in NAMED_GESTURES else None
     except Exception as e:
         print(f"  [action] {e}")
+        return None
+
+
+# ── Name onboarding / voice-rename ────────────────────────────────────────────
+# Naming works in ANY language (like the rest of the demo): detection is done by
+# the LLM, not a hardcoded per-language phrase list. detect_rename() decides, for
+# any language, whether the user is giving/correcting THEIR OWN name and returns
+# it; extract_name() pulls the name out of an answer to "what's your name?".
+
+def detect_rename(client, text: str) -> str | None:
+    """All-language voice-rename detector. If the user is stating or changing
+    THEIR OWN name (in any language: 'my name is X', 'me llamo X', '私の名前はX',
+    'اسمي X', …) return that name Titlecased; otherwise None. Runs on the fast
+    8B model. Intent-gated so 'I'm hungry' / 'call an ambulance' don't fire."""
+    try:
+        resp = client.chat.completions.create(
+            model=ACTION_MODEL,
+            messages=[
+                {"role": "system", "content":
+                    "The user just spoke to a robot (message may be in ANY "
+                    "language). Decide if they are stating or correcting THEIR "
+                    "OWN name — introducing themselves or telling the robot what "
+                    "to call them. If yes, reply with ONLY that name, in its "
+                    "normal Latin/original spelling, and nothing else. If they "
+                    "are NOT giving their own name, reply exactly NONE."},
+                {"role": "user", "content": text},
+            ],
+            max_tokens=8, temperature=0.0, stream=False,
+        )
+        name = (resp.choices[0].message.content or "").strip().strip(".,!?\"'").strip()
+        if not name or name.upper() == "NONE" or len(name) > 30:
+            return None
+        return name.split()[0].strip(".,!?\"'").title() or None
+    except Exception as e:
+        print(f"  [detect_rename] {e}")
+        return None
+
+
+def extract_name(client, text: str) -> str | None:
+    """Pull a clean given name out of a phrase like 'my name is Tony',
+    'call me T', 'me llamo Tony'. Returns a Titlecased single name, or None."""
+    try:
+        resp = client.chat.completions.create(
+            model=ACTION_MODEL,
+            messages=[
+                {"role": "system", "content":
+                    "Extract ONLY the person's own first name from the message. "
+                    "Reply with just that name, capitalized, and nothing else. "
+                    "If there is no clear personal name, reply exactly NONE."},
+                {"role": "user", "content": text},
+            ],
+            max_tokens=8, temperature=0.0, stream=False,
+        )
+        name = (resp.choices[0].message.content or "").strip().strip(".,!?\"'").strip()
+        if not name or name.upper() == "NONE" or len(name) > 30:
+            return None
+        name = name.split()[0].strip(".,!?\"'").title()
+        return name or None
+    except Exception as e:
+        print(f"  [extract_name] {e}")
         return None
 
 
@@ -498,9 +560,19 @@ def main():
         log.event(f"  Camera unavailable: {e}")
         cam = None
 
+    # Rolling 100 MB "black box" — recent text + audio + video for post-hoc
+    # debugging. Prunes oldest first, never blocks the demo. Under cache/diag/.
+    try:
+        recorder = DiagnosticRecorder(CACHE_DIR, budget_mb=100)
+        recorder.start()
+        log.event("  Diagnostic recorder: cache/diag/ (100 MB rolling window)")
+    except Exception as e:
+        log.event(f"  Diagnostic recorder unavailable: {e}")
+        recorder = None
+
     cerebras_client = make_cerebras(ROOT)
     if cerebras_client:
-        log.event("  LLM: Cerebras accelerator enabled (Llama-4-scout @ ~2000 tok/s)")
+        log.event(f"  LLM: Cerebras accelerator enabled ({CEREBRAS_MODEL}) — Groq fallback ready")
     else:
         log.event("  LLM: Groq (add CEREBRAS_API_KEY to .env for ~2× speedup)")
 
@@ -563,7 +635,9 @@ def main():
             face_stop = threading.Event()
             greeted_names = {}
             greeted_unknown = 0.0
-            last_face_seen = 0.0
+            # Seed to "now" so a face already present at startup isn't treated as a
+            # fresh arrival on top of the opening greeting.
+            last_face_seen = time.time()
             target_yaw = target_pitch = target_body = 0.0
             ant_target = ANT_IDLE
 
@@ -596,6 +670,8 @@ def main():
                     if rgb is None:
                         time.sleep(0.03)
                         continue
+                    if recorder is not None:
+                        recorder.add_frame(rgb)
                     frame_n += 1
                     try:
                         results = fid.identify(rgb)
@@ -645,31 +721,50 @@ def main():
                                 results,
                                 key=lambda r: (r[0][2]-r[0][0])*(r[0][1]-r[0][3]))
                         (bx1, by1, bx2, by2), name, conf, tid = chosen
-                        cx = ((bx1 + bx2) / 2.0) / CAM_W
-                        cy = ((by1 + by2) / 2.0) / CAM_H
+                        fh, fw = rgb.shape[:2]
+                        cx = ((bx1 + bx2) / 2.0) / fw
+                        cy = ((by1 + by2) / 2.0) / fh
                         err_x = (cx - 0.5) * 2.0
                         err_y = (cy - 0.5) * 2.0
-                        target_yaw = HEAD_ALPHA*(err_x*YAW_GAIN) + (1-HEAD_ALPHA)*target_yaw
+                        # Deadband: a near-centered face shouldn't cause micro-jitter.
+                        if abs(err_x) < 0.05:
+                            err_x = 0.0
+                        if abs(err_y) < 0.05:
+                            err_y = 0.0
+                        # Negative feedback to CENTER the face. The camera is NOT
+                        # mirrored and +yaw turns the head to its LEFT, so a face on
+                        # the image's right (err_x>0) needs the head to turn RIGHT =>
+                        # negative yaw (and negative body_yaw, same convention). Pitch
+                        # keeps err_y's sign: +pitch tilts DOWN and err_y>0 is the
+                        # lower half of the image.
+                        target_yaw = HEAD_ALPHA*(-err_x*YAW_GAIN) + (1-HEAD_ALPHA)*target_yaw
                         target_pitch = HEAD_ALPHA*(err_y*PITCH_GAIN) + (1-HEAD_ALPHA)*target_pitch
-                        target_body = BODY_ALPHA*(err_x*BODY_GAIN) + (1-BODY_ALPHA)*target_body
+                        target_body = BODY_ALPHA*(-err_x*BODY_GAIN) + (1-BODY_ALPHA)*target_body
                         ant_target = ANT_EXCITED
+                        # "Fresh arrival": the scene was empty for >ARRIVAL_GAP_S and
+                        # now a face appeared → someone walked up, greet them even if
+                        # the normal 90s cooldown hasn't elapsed. Brief detection
+                        # dropouts (<5s) don't count as leaving, so no over-greeting.
+                        arrival = (time.time() - last_face_seen) > ARRIVAL_GAP_S
                         last_face_seen = time.time()
                         if name != "visitor":
                             state.last_face_name = name
                             state.last_face_conf = conf
                             engine.face_name = name
                             now = time.time()
-                            if now - greeted_names.get(name, 0) > GREET_COOLDOWN_S:
+                            if arrival or now - greeted_names.get(name, 0) > GREET_COOLDOWN_S:
                                 txt = random.choice(KNOWN_FACE_GREETINGS).format(name=name)
-                                log.event(f"  [face] greeting {name} ({conf:.0%})")
+                                log.event(f"  [face] greeting {name} ({conf:.0%})"
+                                          f"{' [arrival]' if arrival else ''}")
                                 greeted_names[name] = now
                                 _greet_async(txt)
                         else:
                             engine.face_name = "visitor"
                             now = time.time()
-                            if now - greeted_unknown > GREET_COOLDOWN_S:
+                            if arrival or now - greeted_unknown > GREET_COOLDOWN_S:
                                 txt = random.choice(UNKNOWN_FACE_GREETINGS)
-                                log.event("  [face] greeting visitor")
+                                log.event(f"  [face] greeting visitor"
+                                          f"{' [arrival]' if arrival else ''}")
                                 greeted_unknown = now
                                 _greet_async(txt)
                     else:
@@ -686,6 +781,10 @@ def main():
                     state.antenna_left = ant_target
                     state.antenna_right = ant_target
                     anim.set_gaze_bias(target_yaw, target_pitch, target_body)
+                    # Emotional antenna bias: perk up when tracking someone, droop
+                    # when alone. Gentle range so it layers on the base motion
+                    # instead of pegging the servos.
+                    anim.set_antenna_bias(max(-0.25, min(0.30, ant_target)))
                     time.sleep(1.0 / 30)
 
             def _greet_async(text):
@@ -775,6 +874,8 @@ def main():
                         anim.set_state(Animator.THINKING)
                         state.anim_state = "thinking"
                         audio_path = log.save_audio(pcm)
+                        if recorder is not None:
+                            recorder.add_audio(pcm, "utt")
 
                         t0 = time.time()
                         try:
@@ -804,6 +905,8 @@ def main():
                         state.current_lang = final_lang or current_lang
                         log.turn(kind="stt", audio=audio_path, final_lang=final_lang,
                                  transcript=text, stt_seconds=round(stt_dt, 3))
+                        if recorder is not None:
+                            recorder.log_text(f"[{final_lang}] You: {text}")
 
                         if not text:
                             ask_repeat()
@@ -816,7 +919,10 @@ def main():
                         prewarm(current_lang)
 
                         if waiting_for_name[0]:
-                            name_text = text.strip().strip(".,!?;:\"'").strip()
+                            # Pull just the name out of "my name is Tony" etc.;
+                            # fall back to the raw (trimmed) transcript if unsure.
+                            name_text = (extract_name(groq_client, text)
+                                         or text.strip().strip(".,!?;:\"'").strip())
                             frames = []
                             if cam is not None:
                                 for _ in range(3):
@@ -852,6 +958,61 @@ def main():
                             speak_cue(listener, "listening", current_lang)
                             continue
 
+                        # Voice rename in ANY language: if the user gave their own
+                        # name ("my name is X", "me llamo X", …), drop the old/wrong
+                        # roster entry for this speaker, re-capture the face, and
+                        # re-save under X. Only checked on short utterances so it
+                        # never runs the detector on long conversational turns.
+                        if cam is not None and len(text.split()) <= 12:
+                            new_name = detect_rename(groq_client, text)
+                            if new_name:
+                                old_name = None
+                                for r in last_face_results[0]:
+                                    if r[3] == speaker_track_id[0] and r[1] != "visitor":
+                                        old_name = r[1]
+                                        break
+                                listener.mute()
+                                state.anim_state = "speaking"
+                                try:
+                                    if old_name and old_name.lower() != new_name.lower():
+                                        try:
+                                            fid.remove_person(old_name)
+                                            log.event(f"  [rename] removed old entry '{old_name}'")
+                                        except Exception as e:
+                                            log.error("rename_remove", e)
+                                    frames = []
+                                    for _ in range(4):
+                                        fr = cam.frame_rgb()
+                                        if fr is not None:
+                                            frames.append(fr)
+                                        time.sleep(0.15)
+                                    ok_count = 0
+                                    try:
+                                        ok_count = fid.add_person(new_name, frames)
+                                    except Exception as e:
+                                        log.error("rename_add", e)
+                                    if ok_count:
+                                        engine.face_name = new_name
+                                        state.known_person_count = (
+                                            len(set(fid._ref_names)) if fid._ref_names else 0)
+                                        stream_to_speaker(
+                                            f"Got it! I'll remember you as {new_name} from now on!")
+                                        log.event(f"  [rename] -> '{new_name}' ({ok_count} encodings)")
+                                        if recorder is not None:
+                                            recorder.log_text(f"[rename] {old_name} -> {new_name}")
+                                    else:
+                                        stream_to_speaker(
+                                            "Hmm, I couldn't see your face well — let's try that in better light!")
+                                        log.event(f"  [rename] failed to capture '{new_name}'")
+                                finally:
+                                    listener.unmute()
+                                    state.anim_state = "listening"
+                                speaker_track_id[0] = None
+                                anim.set_state(Animator.LISTENING)
+                                state.anim_state = "listening"
+                                speak_cue(listener, "listening", current_lang)
+                                continue
+
                         text_lower = text.lower()
                         is_dance = any(kw in text_lower for kw in DANCE_KEYWORDS)
                         search_future = (
@@ -876,6 +1037,8 @@ def main():
                         else:
                             log.event(f"  Reachy [{final_lang}]: {reply}  ({total_dt:.2f}s)")
                             action_pool.submit(engine.remember_turn, text, reply)
+                            if recorder is not None:
+                                recorder.log_text(f"Reachy: {reply}")
 
                         if is_dance and reply is not None:
                             listener.mute()
@@ -904,6 +1067,8 @@ def main():
                 anim.stop()
                 if dashboard:
                     dashboard.stop()
+                if recorder is not None:
+                    recorder.stop()
                 mini.goto_sleep()
 
     except Exception as e:
