@@ -342,6 +342,8 @@ class DialogEngine:
                 for chunk in stream:
                     if _abort.is_set() or n >= self.MAX_SEGMENTS:
                         return
+                    if not chunk.choices:      # terminal usage chunk — no delta
+                        continue
                     buf += chunk.choices[0].delta.content or ""
                     parts = SENTENCE_END.split(buf)
                     if len(parts) > 1:

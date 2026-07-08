@@ -169,6 +169,8 @@ def stream_and_speak(client, history: list, user_text: str, anim,
     first_token = True
 
     for chunk in stream:
+        if not chunk.choices:              # terminal usage chunk — no delta
+            continue
         delta      = chunk.choices[0].delta.content or ""
         if delta and first_token:
             print(f"  LLM  {time.time()-t_llm_start:.2f}s (first token)", flush=True)

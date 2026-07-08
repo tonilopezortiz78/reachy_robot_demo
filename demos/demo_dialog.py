@@ -351,6 +351,8 @@ class DialogEngine:
         for chunk in stream:
             if self._drain_barge_in():
                 return None
+            if not chunk.choices:          # terminal usage chunk — no delta
+                continue
             delta = chunk.choices[0].delta.content or ""
             if first_token and delta:
                 first_token = False

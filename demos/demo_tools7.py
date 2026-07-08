@@ -353,6 +353,8 @@ class DialogEngine:
             for chunk in stream:
                 if self._drain_barge_in():
                     return None
+                if not chunk.choices:          # terminal usage chunk — no delta
+                    continue
                 buffer += chunk.choices[0].delta.content or ""
 
                 # Fire gesture as soon as pick_action resolves (~150ms in)
