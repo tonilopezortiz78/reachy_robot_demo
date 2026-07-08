@@ -87,18 +87,20 @@ def _send(mini, p, y, r, by, ant_l, ant_r):
 # Weights are relative probabilities; the sum is normalised at pick time.
 GESTURE_TEMPLATES = [
     # antenna flicks — quick, frequent, very cute
-    (3,  0.00,  0.00,  0.00, 0.00,  0.45,  0.00, 0.15),  # L flick up
-    (3,  0.00,  0.00,  0.00, 0.00,  0.00,  0.45, 0.15),  # R flick up
-    (2,  0.00,  0.00,  0.00, 0.00,  0.30,  0.30, 0.12),  # both up (perk)
-    (2,  0.00,  0.00,  0.00, 0.00, -0.30, -0.30, 0.15),  # both down (settle)
+    # (durations ≥0.16 s so the flick survives the ANTENNA_MAX_SLEW rate limit
+    #  at full amplitude instead of getting triangle-clipped)
+    (3,  0.00,  0.00,  0.00, 0.00,  0.45,  0.00, 0.18),  # L flick up
+    (3,  0.00,  0.00,  0.00, 0.00,  0.00,  0.45, 0.18),  # R flick up
+    (2,  0.00,  0.00,  0.00, 0.00,  0.30,  0.30, 0.16),  # both up (perk)
+    (2,  0.00,  0.00,  0.00, 0.00, -0.30, -0.30, 0.18),  # both down (settle)
     (1,  0.00,  0.00,  0.00, 0.00, -0.25,  0.40, 0.18),  # L down, R up
     (1,  0.00,  0.00,  0.00, 0.00,  0.40, -0.25, 0.18),  # L up, R down
     # quick antenna shuffles — alternating, very lively
     (2,  0.00,  0.00,  0.00, 0.00,  0.50, -0.50, 0.20),  # V-shape (split)
     (2,  0.00,  0.00,  0.00, 0.00, -0.20,  0.50, 0.20),  # inverted V
-    (1,  0.00,  0.00,  0.00, 0.00,  0.20, -0.20, 0.10),  # tiny tuck
-    (2,  0.00,  0.00,  0.00, 0.00,  0.60,  0.60, 0.10),  # quick double perk (sharp, both up)
-    (1,  0.00,  0.00,  0.00, 0.00,  0.35, -0.45, 0.14),  # fast wiggle — antennas cross
+    (1,  0.00,  0.00,  0.00, 0.00,  0.20, -0.20, 0.16),  # tiny tuck
+    (2,  0.00,  0.00,  0.00, 0.00,  0.60,  0.60, 0.16),  # quick double perk (sharp, both up)
+    (1,  0.00,  0.00,  0.00, 0.00,  0.35, -0.45, 0.18),  # fast wiggle — antennas cross
     # head tilts — curious
     (2,  0.00,  0.00,  0.14, 0.00,  0.00,  0.00, 0.40),  # tilt L
     (2,  0.00,  0.00, -0.14, 0.00,  0.00,  0.00, 0.40),  # tilt R
@@ -122,9 +124,9 @@ GESTURE_TEMPLATES = [
 # listening; be lively again when idle/speaking.
 GESTURE_RATE = {
     "idle":      0.75,
-    "listening": 0.45,   # was 1.75 — quiet mic while the user speaks
+    "listening": 0.45,   # was 1.75 — quiet mic while the user speaks. DO NOT RAISE.
     "thinking":  1.15,
-    "speaking":  2.00,
+    "speaking":  2.60,   # was 2.00 — kids respond to near-constant motion while it talks
 }
 
 # State-dependent antenna random-walk: target range (rad) and re-target interval (s)
@@ -139,17 +141,53 @@ ANTENNA_NEUTRAL = {   # gentle pull toward this when in this state
     "speaking":   0.3,
 }
 ANTENNA_LIVENESS = {
-    "idle":      {"target_lo": -0.38, "target_hi":  0.45, "interval_lo": 0.15, "interval_hi": 0.38},
+    # idle: gentle — slightly narrower than before so idle reads calm next to speaking
+    "idle":      {"target_lo": -0.32, "target_hi":  0.40, "interval_lo": 0.18, "interval_hi": 0.42},
     # listening: slow, small antenna drift so the servos are nearly silent while
-    # the visitor talks (longer intervals = fewer moves = less mic noise). Widened
-    # and shortened slightly vs. before — antennas can be livelier than the head
-    # even while listening — but still the calmest of the four states.
-    "listening": {"target_lo":  0.20, "target_hi":  0.55, "interval_lo": 0.50, "interval_hi": 1.00},
-    "thinking":  {"target_lo": -0.22, "target_hi":  0.55, "interval_lo": 0.12, "interval_hi": 0.28},
-    "speaking":  {"target_lo": -0.12, "target_hi":  0.65, "interval_lo": 0.06, "interval_hi": 0.17},
+    # the visitor talks (longer intervals = fewer moves = less mic noise).
+    # Moderately livelier than before (antennas are the quietest servos), but
+    # still clearly the calmest of the four states — mic-noise rule holds.
+    "listening": {"target_lo":  0.15, "target_hi":  0.60, "interval_lo": 0.40, "interval_hi": 0.85},
+    "thinking":  {"target_lo": -0.25, "target_hi":  0.60, "interval_lo": 0.12, "interval_hi": 0.28},
+    # speaking: big DOWNWARD sweep too (not just up) — more visible travel, and it
+    # keeps the antennas off the +0.70 clamp so the motion doesn't flatten at top
+    "speaking":  {"target_lo": -0.38, "target_hi":  0.55, "interval_lo": 0.06, "interval_hi": 0.17},
 }
 ANTENNA_TAU = 0.05         # seconds — smoothing toward the new target
 ANTENNA_NEUTRAL_TAU = 1.2  # seconds — slow pull back to state neutral (avoids drift)
+
+# Continuous per-antenna "shimmer" — two layered sines per antenna, with a random
+# phase AND a slightly different frequency multiplier per antenna (drawn once at
+# init), so the left and right antennas drift ASYMMETRICALLY like ears reacting
+# instead of moving in lockstep. Format: (amp1, freq1, amp2, freq2) rad / Hz.
+ANTENNA_SHIMMER = {
+    "idle":      (0.05, 0.45, 0.03, 1.10),   # gentle
+    "listening": (0.05, 0.32, 0.03, 0.75),   # moderate + slow — servos stay quiet
+    "thinking":  (0.08, 0.70, 0.04, 1.55),   # busy, pondering
+    "speaking":  (0.10, 0.90, 0.05, 2.05),   # bouncy, excited
+}
+
+# Quick one-antenna "flick" / "perk" events on their own Poisson schedule
+# (events per second). Deliberately independent of GESTURE_RATE so LISTENING
+# gains antenna-only life WITHOUT any extra head/body servo noise near the mic.
+ANTENNA_FLICK_RATE = {
+    "idle":      0.30,
+    "listening": 0.35,   # antennas only — smallest/quietest servos, mic-safe
+    "thinking":  0.55,
+    "speaking":  0.85,
+}
+ANTENNA_FLICK_AMP = (0.20, 0.38)   # rad — peak of the Gaussian flick envelope
+ANTENNA_FLICK_DUR = (0.30, 0.60)   # s — brief; reads as a very alive "ear twitch"
+
+# Hard rate limit (rad/s) on the COMBINED aliveness antenna offset (walk +
+# shimmer + flicks + gesture antenna components). Guarantees no per-frame jerk
+# regardless of how the layers stack — Feetech servos overheat under aggressive
+# duty, and sudden steps are the loudest thing the mic hears.
+ANTENNA_MAX_SLEW = 3.0
+
+# set_energy(): global liveliness multiplier for the shimmer/flick layers.
+ENERGY_DEFAULT   = 0.6   # default feel (matches pre-energy tuning); 1.0 = kid mode
+ENERGY_SCALE_MAX = 1.5   # cap on the internal scale so energy=1.0 can't peg servos
 
 
 class _AlivenessLayer:
@@ -170,13 +208,90 @@ class _AlivenessLayer:
         self._ant_r_target = 0.0
         self._ant_l_next = 0.0
         self._ant_r_next = 0.0
+        # Shimmer: per-antenna random phases and frequency multipliers (drawn
+        # once) so the two antennas never oscillate in lockstep — indices
+        # 0/1 = left sine1/sine2, 2/3 = right sine1/sine2.
+        self._shim_phase = [random.uniform(0.0, 2.0 * math.pi) for _ in range(4)]
+        self._shim_freq  = [random.uniform(0.85, 1.18) for _ in range(4)]
+        # Flick events (Poisson-scheduled quick one-antenna perks)
+        self._flicks = []
+        self._flick_next = 0.0
+        # Slew-limited combined antenna output (previous frame's value)
+        self._out_l = 0.0
+        self._out_r = 0.0
 
-    def update(self, t: float, state: str, dt: float) -> tuple[float, float, float, float, float, float]:
-        """Schedule any due gestures; return total offset to add to base values."""
+    def update(self, t: float, state: str, dt: float,
+               energy: float = 1.0) -> tuple[float, float, float, float, float, float]:
+        """Schedule any due gestures; return total offset to add to base values.
+
+        ``energy`` scales the extra antenna-liveliness layers (shimmer + flicks);
+        1.0 is the standard feel, >1.0 is bouncier. Head/body offsets are never
+        scaled up, so the LISTENING mic-noise rule is unaffected by energy.
+        """
         self._maybe_schedule(t, state)
         po, yo, ro, byo, alo, aro = self._accumulate(t)
-        al_off, ar_off = self._antenna_walk(t, state, dt)
-        return po, yo, ro, byo, alo + al_off, aro + ar_off
+        wl, wr = self._antenna_walk(t, state, dt)
+        sl, sr = self._antenna_shimmer(t, state, energy)
+        fl, fr = self._antenna_flicks(t, state, energy)
+        # Combine every antenna layer, then rate-limit the result so no frame
+        # can jerk the antenna servos no matter how the layers stack.
+        raw_l = alo + wl + sl + fl
+        raw_r = aro + wr + sr + fr
+        max_step = ANTENNA_MAX_SLEW * dt
+        self._out_l += max(-max_step, min(max_step, raw_l - self._out_l))
+        self._out_r += max(-max_step, min(max_step, raw_r - self._out_r))
+        return po, yo, ro, byo, self._out_l, self._out_r
+
+    def _antenna_shimmer(self, t: float, state: str, energy: float):
+        """Continuous low-amplitude layered sines, asymmetric per antenna.
+
+        Each antenna has its own random phase and frequency multiplier, so left
+        and right wander independently — reads as ears "reacting" rather than a
+        metronome. Amplitude/frequency are state-dependent (ANTENNA_SHIMMER).
+        """
+        a1, f1, a2, f2 = ANTENNA_SHIMMER.get(state, ANTENNA_SHIMMER["idle"])
+        sl = (a1 * math.sin(2 * math.pi * f1 * self._shim_freq[0] * t + self._shim_phase[0])
+              + a2 * math.sin(2 * math.pi * f2 * self._shim_freq[1] * t + self._shim_phase[1]))
+        sr = (a1 * math.sin(2 * math.pi * f1 * self._shim_freq[2] * t + self._shim_phase[2])
+              + a2 * math.sin(2 * math.pi * f2 * self._shim_freq[3] * t + self._shim_phase[3]))
+        return sl * energy, sr * energy
+
+    def _antenna_flicks(self, t: float, state: str, energy: float):
+        """Poisson-scheduled quick 'flick'/'perk' events (0.3–0.6 s, Gaussian
+        envelope), usually one antenna at a time — the classic 'alive ear twitch'.
+        Runs on its own schedule, separate from GESTURE_RATE, so LISTENING gets
+        antenna-only life with zero extra head/body servo noise near the mic.
+        """
+        rate = ANTENNA_FLICK_RATE.get(state, ANTENNA_FLICK_RATE["idle"])
+        rate *= min(1.0, 0.4 + 0.6 * energy)          # low energy → rarer flicks
+        if t >= self._flick_next:
+            dur = random.uniform(*ANTENNA_FLICK_DUR)
+            amp = random.uniform(*ANTENNA_FLICK_AMP) * min(energy, 1.3)
+            if random.random() < 0.25:
+                amp = -amp * 0.6                       # occasional downward tuck
+            roll = random.random()
+            if roll < 0.45:
+                al, ar = amp, 0.0                      # left-ear flick
+            elif roll < 0.90:
+                al, ar = 0.0, amp                      # right-ear flick
+            else:
+                al, ar = amp, amp * 0.8                # rare double perk
+            self._flicks.append({"start": t, "peak": t + dur * 0.5,
+                                 "end": t + dur, "al": al, "ar": ar})
+            self._flick_next = t + random.expovariate(max(rate, 0.05))
+        fl = fr = 0.0
+        alive = []
+        for g in self._flicks:
+            if g["end"] < t:
+                continue
+            alive.append(g)
+            # Same Gaussian envelope shape as the gesture layer (σ = dur/4)
+            sigma = (g["end"] - g["start"]) / 4.0
+            w = math.exp(-((t - g["peak"]) ** 2) / (2.0 * sigma * sigma))
+            fl += g["al"] * w
+            fr += g["ar"] * w
+        self._flicks = alive
+        return fl, fr
 
     def _antenna_walk(self, t: float, state: str, dt: float):
         """
@@ -332,6 +447,7 @@ class Animator:
         self._gesture_active = False
         self._gaze_bias = (0.0, 0.0, 0.0)   # (yaw, pitch, body_yaw) radians — head-tracking offset
         self._ant_bias  = 0.0  # additive antenna offset (radians), both antennas
+        self._energy    = ENERGY_DEFAULT  # 0..1 liveliness multiplier — see set_energy()
         self._thinking = _ThinkingAnimation()
         self._lock     = threading.Lock()
         self._stop     = threading.Event()
@@ -358,6 +474,14 @@ class Animator:
         lv = max(-0.45, min(0.55, level))
         with self._lock:
             self._ant_bias = lv
+
+    def set_energy(self, level: float) -> None:
+        """Global liveliness multiplier, 0..1. Default ENERGY_DEFAULT (0.6) is
+        the standard feel; 1.0 = maximum bounce ("kid mode"). Only scales the
+        antenna shimmer/flick layers — head/body motion rates are untouched, so
+        the LISTENING mic-noise rule holds at any energy."""
+        with self._lock:
+            self._energy = max(0.0, min(1.0, level))
 
     def pause(self):
         """Pause the animation loop — hand full servo control to caller."""
@@ -420,6 +544,7 @@ class Animator:
                 continue
             with self._lock:
                 state = self.state
+                energy = self._energy
             # During a play_gesture() call, suppress base + aliveness so the
             # HF preset reads cleanly. The aliveness state is preserved.
             if self._gesture_active:
@@ -477,7 +602,9 @@ class Animator:
 
                 # ── Aliveness layer — random micro-gestures + antenna walk ──
                 if aliveness is not None:
-                    po, yo, ro, byo, alo, aro = aliveness.update(t, state, dt)
+                    # energy → internal scale: ENERGY_DEFAULT maps to 1.0
+                    e_scale = min(ENERGY_SCALE_MAX, energy / ENERGY_DEFAULT)
+                    po, yo, ro, byo, alo, aro = aliveness.update(t, state, dt, e_scale)
                     p  += po
                     y  += yo
                     r  += ro

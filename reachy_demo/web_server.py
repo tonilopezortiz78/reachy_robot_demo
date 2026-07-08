@@ -778,13 +778,21 @@ class WebDashboard:
             # when the serialized snapshot changed since the last push. Each
             # client gets its own coroutine, so simultaneous clients are fine.
             await websocket.accept()
-            last: str | None = None
+            last_key: str | None = None
+            last_sent = 0.0
             try:
                 while not self._stop_flag.is_set():
-                    payload = json.dumps(self.state.snapshot())
-                    if payload != last:
-                        await websocket.send_text(payload)
-                        last = payload
+                    snap = self.state.snapshot()
+                    # Compare WITHOUT uptime_s — it ticks every iteration and
+                    # made "change-only" push a no-op (full-rate to every
+                    # client). A 1 s heartbeat still keeps uptime fresh.
+                    key = json.dumps({k: v for k, v in snap.items()
+                                      if k != "uptime_s"})
+                    now = time.time()
+                    if key != last_key or now - last_sent >= 1.0:
+                        await websocket.send_text(json.dumps(snap))
+                        last_key = key
+                        last_sent = now
                     await asyncio.sleep(0.12)
             except WebSocketDisconnect:
                 pass  # client closed the tab / navigated away — normal

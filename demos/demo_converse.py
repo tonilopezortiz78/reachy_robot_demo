@@ -209,6 +209,42 @@ DANCE_FUNNIES = [
     "NOOO! The music! I need my music! This is an outrage!",
 ]
 
+# Voice sleep/wake commands. Conservative multilingual phrase sets matched the
+# same way as DANCE_KEYWORDS (substring on the lowercased transcript), but ONLY
+# on short utterances (<= 5 words) so "I could not sleep last night" or a
+# passing mention of waking up mid-conversation never flips the power state.
+SLEEP_COMMANDS = [
+    "go to sleep", "go sleep", "sleep now", "time to sleep", "sleep time",
+    "nap time", "sleep mode",
+    "duérmete", "a dormir", "ve a dormir", "vete a dormir",   # Spanish
+    "va dormir", "dors", "au lit",                            # French
+    "schlaf ein",                                             # German
+    "durma",                                                  # Portuguese
+    "dormi",                                                  # Italian
+    "спи",                                                    # Russian
+    "寝て", "ねて",                                            # Japanese
+    "सो जाओ",                                                 # Hindi
+]
+WAKE_COMMANDS = [
+    "wake up", "wake", "get up",
+    "despierta", "levántate",                                 # Spanish
+    "réveille-toi", "reveille",                               # French
+    "wach auf",                                               # German
+    "acorda",                                                 # Portuguese
+    "svegliati",                                              # Italian
+    "проснись",                                               # Russian
+    "起きて",                                                  # Japanese
+    "उठो",                                                    # Hindi
+]
+
+
+def matches_command(text: str, phrases) -> bool:
+    """True when a SHORT utterance (<= 5 words) contains one of the phrases."""
+    lowered = (text or "").lower()
+    if len(lowered.split()) > 5:
+        return False
+    return any(p in lowered for p in phrases)
+
 
 speaker_track_id = [None]
 onboarded_track_ids = {}
@@ -670,6 +706,7 @@ def main():
             mini.wake_up()
             emotions = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
             anim = Animator(mini, moves_library=emotions)
+            anim.set_energy(1.0)   # kid mode: max antenna liveliness
             dances = RecordedMoves("pollen-robotics/reachy-mini-dances-library")
 
             from reachy_demo.listener import ContinuousListener
@@ -892,6 +929,10 @@ def main():
             last_any_greet = [0.0]  # global cross-name greeting throttle
 
             def _greet_async(text):
+                # Asleep robots don't greet — a spoken greeting while sleeping
+                # would be creepy and the mic mute/unmute churn wakes nothing.
+                if not state.robot_online:
+                    return
                 # Global throttle across ALL spoken greetings: flapping
                 # recognition once produced a greeting every ~8 s, muting the
                 # mic so often the robot appeared to have stopped listening.
@@ -919,6 +960,7 @@ def main():
             last_repeat = 0.0
             web_muted = [False]     # dashboard Mute hold currently applied
             pending_lang = [None]   # language-switch hysteresis (needs 2 hits)
+            pending_ttl = [0]       # utterances the pending language survives
 
             def ask_repeat():
                 nonlocal last_repeat
@@ -940,12 +982,22 @@ def main():
                         state.pending_wake = False
                         try: mini.wake_up()
                         except Exception: pass
+                        anim.resume()
+                        anim.set_state(Animator.LISTENING)
                         state.robot_online = True
+                        state.anim_state = "listening"
+                        log.event("  [web] wake requested — robot awake")
                     if state.pending_sleep:
                         state.pending_sleep = False
+                        # Pause the animator BEFORE goto_sleep — it keeps
+                        # streaming set_target and would re-energize the
+                        # motors after sleep (they overheat).
+                        anim.pause()
                         try: mini.goto_sleep()
                         except Exception: pass
                         state.robot_online = False
+                        state.anim_state = "idle"
+                        log.event("  [web] sleep requested — robot asleep")
                     if state.pending_say:
                         say_text = state.pending_say
                         state.pending_say = ""
@@ -1043,19 +1095,27 @@ def main():
                             # Language hysteresis: Whisper misdetects short or
                             # quiet utterances (Catalan/Bengali came back for
                             # English speakers), which flipped the reply
-                            # language mid-chat. Only switch after hearing the
-                            # SAME new language twice in a row — someone truly
-                            # switching confirms on their very next sentence.
-                            if lang_known and final_lang and final_lang != current_lang:
-                                if pending_lang[0] != final_lang:
+                            # language mid-chat. Switch only when the SAME new
+                            # language is heard twice within a 3-utterance
+                            # window (so EN/ES alternators still get both).
+                            # Exception: a long first-ever utterance is trusted
+                            # immediately — misdetections cluster on short ones.
+                            trust_first = (not lang_known
+                                           and len(text.split()) >= 4)
+                            if (final_lang and final_lang != current_lang
+                                    and not trust_first):
+                                if pending_lang[0] == final_lang:
+                                    pending_lang[0] = None      # confirmed
+                                else:
                                     pending_lang[0] = final_lang
+                                    pending_ttl[0] = 2          # survives 2 misses
                                     log.event(f"  [lang] heard {final_lang} once — "
                                               f"replying in {current_lang} until confirmed")
                                     final_lang = current_lang
-                                else:
+                            elif pending_lang[0]:
+                                pending_ttl[0] -= 1
+                                if pending_ttl[0] <= 0:
                                     pending_lang[0] = None
-                            else:
-                                pending_lang[0] = None
                             directive = language_directive(final_lang)
                         except Exception as e:
                             log.error("transcribe", e)
@@ -1089,11 +1149,72 @@ def main():
                         lang_known = True
                         prewarm(current_lang)
 
+                        text_lower = text.lower()
+                        is_dance = any(kw in text_lower for kw in DANCE_KEYWORDS)
+                        is_command = (is_dance
+                                      or matches_command(text, SLEEP_COMMANDS)
+                                      or matches_command(text, WAKE_COMMANDS))
+
+                        # Voice sleep/wake — checked before EVERYTHING else so
+                        # an asleep robot never onboards, renames, or replies.
+                        if not state.robot_online:
+                            if matches_command(text, WAKE_COMMANDS):
+                                log.event("  [voice] wake command — waking up")
+                                try:
+                                    mini.wake_up()
+                                except Exception as e:
+                                    log.error("voice_wake", e)
+                                anim.resume()
+                                anim.set_state(Animator.LISTENING)
+                                state.robot_online = True
+                                state.anim_state = "listening"
+                                with speech_lock:
+                                    state.anim_state = "speaking"
+                                    try:
+                                        listener.mute()
+                                        stream_to_speaker("I'm awake! Beep boop!")
+                                    finally:
+                                        listener.unmute()
+                                        state.anim_state = "listening"
+                            else:
+                                # Asleep robot ignores conversation entirely.
+                                state.anim_state = "idle"
+                            continue
+
+                        if matches_command(text, SLEEP_COMMANDS):
+                            log.event("  [voice] sleep command — going to sleep")
+                            with speech_lock:
+                                state.anim_state = "speaking"
+                                try:
+                                    listener.mute()
+                                    stream_to_speaker(
+                                        "Okay, nap time! Zzz... say wake up when you need me!")
+                                finally:
+                                    listener.unmute()
+                            # Pause the animator BEFORE goto_sleep — it keeps
+                            # streaming set_target and would re-energize the
+                            # motors after sleep (they overheat).
+                            anim.pause()
+                            try:
+                                mini.goto_sleep()
+                            except Exception as e:
+                                log.error("voice_sleep", e)
+                            state.robot_online = False
+                            state.anim_state = "idle"
+                            continue
+
                         claimed_onboard = False
                         with onboard_lock:
                             if waiting_for_name[0]:
                                 waiting_for_name[0] = False   # claim: give-up can't fire now
                                 claimed_onboard = True
+                        if claimed_onboard and is_command:
+                            # "Dance macarena" mid-onboarding is a request, not
+                            # a name — abandon onboarding and fall through so
+                            # the command actually runs.
+                            log.event("  [onboard] visitor gave a command, not a name — abandoning")
+                            onboarding_track_id[0] = None
+                            claimed_onboard = False
                         if claimed_onboard:
                             # Pull just the name out of "my name is Tony" etc.;
                             # fall back to the raw (trimmed) transcript if unsure.
@@ -1104,11 +1225,22 @@ def main():
                             if not _valid_person_name(name_text):
                                 # Don't enroll junk ('আ', whole sentences, …):
                                 # bad roster names poison recognition forever.
+                                # Speak directly (NOT via the throttled
+                                # _greet_async) — the visitor must hear why
+                                # nothing happened.
                                 log.event(f"  [onboard] rejected junk name {name_text!r}")
                                 onboarding_track_id[0] = None
-                                _greet_async("Hmm, I didn't catch your name — tell me again later!")
+                                with speech_lock:
+                                    state.anim_state = "speaking"
+                                    try:
+                                        listener.mute()
+                                        stream_to_speaker(
+                                            "Hmm, I didn't catch your name — tell me again later!")
+                                    finally:
+                                        listener.unmute()
+                                        state.anim_state = "listening"
                                 anim.set_state(Animator.LISTENING)
-                                state.anim_state = "listening"
+                                speak_cue(listener, "listening", current_lang)
                                 continue
                             # Current box of the track being onboarded, so the
                             # RIGHT face gets enrolled when several are in view.
@@ -1166,13 +1298,11 @@ def main():
                         # roster entry for this speaker, re-capture the face, and
                         # re-save under X. Only checked on short utterances so it
                         # never runs the detector on long conversational turns.
-                        text_lower = text.lower()
-                        is_dance = any(kw in text_lower for kw in DANCE_KEYWORDS)
                         # Never treat an action request as a self-introduction:
                         # "Can you dance macarena" once got misheard, passed to
                         # detect_rename, and created a bogus roster person with
                         # the current speaker's face — corrupting recognition.
-                        if (cam is not None and not is_dance
+                        if (cam is not None and not is_command
                                 and 2 <= len(text.split()) <= 8):
                             new_name = detect_rename(groq_client, text)
                             if new_name and not _valid_person_name(new_name):
@@ -1187,10 +1317,12 @@ def main():
                                         if r[1] != "visitor":
                                             old_name = r[1]
                                         break
+                                # mute/anim INSIDE the try so the lock always
+                                # releases even if mute() raises.
                                 speech_lock.acquire()
-                                listener.mute()
-                                state.anim_state = "speaking"
                                 try:
+                                    listener.mute()
+                                    state.anim_state = "speaking"
                                     if old_name and old_name.lower() != new_name.lower():
                                         try:
                                             fid.remove_person(old_name)
