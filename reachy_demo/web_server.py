@@ -18,6 +18,7 @@ Endpoints:
     POST /api/sleep — sets state.pending_sleep -> {"ok": true}
     POST /api/say   — JSON {text: "..."} -> state.request_say -> {"ok": true}
     POST /api/mute  — JSON {muted: bool} -> sets state.muted -> {"ok": true}
+    POST /api/stop  — sets state.pending_shutdown (demo exits cleanly, robot sleeps)
 
 Threading model:
     start() spawns uvicorn in a daemon thread and returns immediately so the
@@ -298,6 +299,31 @@ button:active { transform: scale(0.97); }
 .tab-btn.active { background: rgba(127,127,127,0.25); font-weight: 600; }
 .tabpane { display: none; }
 .tabpane.active { display: block; }
+.btn-danger {
+  background: #b3362b !important;
+  color: #fff !important;
+  border-color: #b3362b !important;
+}
+/* Big human-readable state banner: tells visitors when THEY can talk and
+   when Reachy is thinking/talking. Colored in sync with the body tint. */
+.state-banner {
+  text-align: center;
+  font-size: 2.2rem;
+  font-weight: 700;
+  padding: 14px 10px;
+  border-radius: 12px;
+  margin: 0 24px 14px;
+  letter-spacing: 0.02em;
+  transition: background 0.3s, color 0.3s;
+}
+body[data-state="idle"]      .state-banner { background: #1e293b; color: #94a3b8; }
+body[data-state="listening"] .state-banner { background: #16a34a; color: #f0fdf4; }
+body[data-state="thinking"]  .state-banner { background: #d97706; color: #fffbeb; }
+body[data-state="speaking"]  .state-banner { background: #2563eb; color: #eff6ff; }
+.person-block { margin-bottom: 14px; }
+.person-block h3 { margin: 0 0 6px; font-size: 1rem; }
+.person-block ul { margin: 0; padding-left: 20px; font-size: 0.88rem; }
+.person-block li { margin-bottom: 3px; }
 </style>
 </head>
 <body>
@@ -306,6 +332,7 @@ button:active { transform: scale(0.97); }
   <p class="subtitle">localhost:__PORT__</p>
 </header>
 <div class="conn-banner" id="conn-banner">&#9888; Connection lost &mdash; reconnecting<span id="conn-dots"></span></div>
+<div class="state-banner" id="state-banner">&#128564; Reachy is idle</div>
 <main class="grid">
    <div class="left">
      <div class="card">
@@ -319,6 +346,7 @@ button:active { transform: scale(0.97); }
   <div class="right">
     <div class="tabs">
       <button class="tab-btn active" id="tab-btn-robot" onclick="showTab('robot')">Robot</button>
+      <button class="tab-btn" id="tab-btn-people" onclick="showTab('people')">People</button>
       <button class="tab-btn" id="tab-btn-admin" onclick="showTab('admin')">Admin</button>
     </div>
     <div class="tabpane active" id="tab-robot">
@@ -386,6 +414,7 @@ button:active { transform: scale(0.97); }
           <button id="btn-wake">Wake Up</button>
           <button id="btn-sleep">Go Sleep</button>
           <button id="btn-mute">Mute</button>
+          <button id="btn-stop" class="btn-danger">Stop Demo</button>
         </div>
         <div class="say-row">
           <input type="text" id="say-input" placeholder="Type something for Reachy to say...">
@@ -394,6 +423,12 @@ button:active { transform: scale(0.97); }
       </div>
     </div>
     </div><!-- /tab-robot -->
+    <div class="tabpane" id="tab-people">
+    <div class="card">
+      <h2>People Reachy Remembers</h2>
+      <div id="people-list">&mdash;</div>
+    </div>
+    </div><!-- /tab-people -->
     <div class="tabpane" id="tab-admin">
     <!-- Business-sensitive info (provider, model, spend) lives on its own tab
          so the default view is safe to project to visitors/kids. -->
@@ -424,12 +459,55 @@ button:active { transform: scale(0.97); }
   </div>
 </main>
 <script>
+var TABS = ["robot", "people", "admin"];
 function showTab(name) {
-  document.getElementById("tab-robot").className = "tabpane" + (name === "robot" ? " active" : "");
-  document.getElementById("tab-admin").className = "tabpane" + (name === "admin" ? " active" : "");
-  document.getElementById("tab-btn-robot").className = "tab-btn" + (name === "robot" ? " active" : "");
-  document.getElementById("tab-btn-admin").className = "tab-btn" + (name === "admin" ? " active" : "");
+  TABS.forEach(function(t) {
+    document.getElementById("tab-" + t).className = "tabpane" + (t === name ? " active" : "");
+    document.getElementById("tab-btn-" + t).className = "tab-btn" + (t === name ? " active" : "");
+  });
+  if (name === "people") { refreshPeople(); }
 }
+
+function refreshPeople() {
+  fetch("/api/people")
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var el = document.getElementById("people-list");
+      if (!data.people || !data.people.length) {
+        el.textContent = "Nobody remembered yet — say hi to Reachy!";
+        return;
+      }
+      el.innerHTML = "";
+      data.people.forEach(function(p) {
+        var block = document.createElement("div");
+        block.className = "person-block";
+        var h = document.createElement("h3");
+        h.textContent = p.name;
+        block.appendChild(h);
+        var ul = document.createElement("ul");
+        (p.facts.length ? p.facts : ["(no facts yet)"]).forEach(function(f) {
+          var li = document.createElement("li");
+          li.textContent = f;
+          ul.appendChild(li);
+        });
+        block.appendChild(ul);
+        el.appendChild(block);
+      });
+    })
+    .catch(function() {});
+}
+setInterval(function() {
+  if (document.getElementById("tab-people").className.indexOf("active") !== -1) {
+    refreshPeople();
+  }
+}, 5000);
+
+var STATE_BANNER = {
+  idle:      "😴 Reachy is sleeping",
+  listening: "🎤 You can talk now!",
+  thinking:  "🤔 Reachy is thinking…",
+  speaking:  "🗣️ Reachy is talking…"
+};
 var muted = false;
 var connOK = true;
 var pollTimer = null;
@@ -488,6 +566,11 @@ function reconnectVideo() {
 
 document.getElementById("btn-wake").onclick = function() { post("/api/wake"); };
 document.getElementById("btn-sleep").onclick = function() { post("/api/sleep"); };
+document.getElementById("btn-stop").onclick = function() {
+  if (confirm("Stop the whole demo? Reachy will go to sleep and the program will exit.")) {
+    post("/api/stop");
+  }
+};
 document.getElementById("btn-mute").onclick = function() {
   muted = !muted;
   post("/api/mute", {muted: muted});
@@ -521,7 +604,10 @@ function render(s) {
       document.getElementById("robot-status").textContent = s.robot_online ? "Online" : "Offline";
 
       var animState = ANIM_STATES.indexOf(s.anim_state) !== -1 ? s.anim_state : "idle";
+      if (!s.robot_online) { animState = "idle"; }  // asleep: never show "you can talk"
       document.body.dataset.state = animState;
+      document.getElementById("state-banner").textContent =
+        STATE_BANNER[animState] || STATE_BANNER.idle;
 
       var badge = document.getElementById("anim-badge");
       badge.textContent = s.anim_state;
@@ -721,6 +807,19 @@ class WebDashboard:
             text = data.get("text", "")
             self.state.request_say(text)
             return {"ok": True}
+
+        @self.app.post("/api/stop")
+        def _stop() -> dict:
+            self.state.request_shutdown()
+            return {"ok": True}
+
+        @self.app.get("/api/people")
+        def _people() -> dict:
+            from reachy_demo.memory import known_people, load_person_facts
+            return {"people": [
+                {"name": n, "facts": load_person_facts(n)}
+                for n in known_people()
+            ]}
 
         @self.app.post("/api/mute")
         async def _mute(request: Request) -> dict:

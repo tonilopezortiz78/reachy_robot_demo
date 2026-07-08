@@ -204,6 +204,39 @@ def play_cue(kind: str, lang: str, block: bool = False):
     return proc
 
 
+def _beep_wav(name: str, tones) -> str | None:
+    """Generate-once a tiny sine-chirp WAV (16-bit mono, 22.05 kHz).
+    `tones` is a list of (freq_hz, duration_s). Returns the cached path."""
+    path = CACHE / f"beep_{name}.wav"
+    if path.exists():
+        return str(path)
+    try:
+        import wave as wavmod
+        import numpy as np
+        CACHE.mkdir(parents=True, exist_ok=True)
+        rate = 22050
+        parts = []
+        for freq, dur in tones:
+            t = np.arange(int(rate * dur)) / rate
+            env = np.minimum(1.0, np.minimum(t / 0.01, (dur - t) / 0.03).clip(min=0))
+            parts.append(0.45 * env * np.sin(2 * np.pi * freq * t))
+        pcm = (np.concatenate(parts) * 32767).astype("<i2")
+        with wavmod.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(pcm.tobytes())
+        return str(path)
+    except Exception:
+        return None
+
+
+# Rising two-tone = "your turn, talk now"; single low tick = "I'm working".
+# Kids read the beeps instantly where a whispered phrase can be missed.
+READY_TONES = [(880.0, 0.09), (1320.0, 0.12)]
+THINK_TONES = [(520.0, 0.07)]
+
+
 def speak_cue(listener, kind: str, lang: str):
     """
     Play a turn-taking cue SAFELY and block until it finishes.
@@ -222,15 +255,19 @@ def speak_cue(listener, kind: str, lang: str):
     """
     # Synthesise first (possibly 2-3 s on first use) WITHOUT muting
     wav = cue_wav(kind, lang)
+    beep = _beep_wav("ready", READY_TONES) if kind == "listening" else None
     if listener is not None:
         listener.mute()
     try:
-        if wav:
-            proc = subprocess.Popen(
-                ["aplay", "-D", SPEAKER, "-q", wav],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            _wait_or_kill(proc)
+        # Crisp beep BEFORE the spoken cue: an unmistakable "you can talk
+        # now" signal even for visitors who miss the whispered phrase.
+        for w in (beep, wav):
+            if w:
+                proc = subprocess.Popen(
+                    ["aplay", "-D", SPEAKER, "-q", w],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                _wait_or_kill(proc)
     finally:
         if listener is not None:
             listener.unmute()
@@ -269,15 +306,18 @@ def speak_thinking(listener, lang: str):
     speak_cue). Intended to run WHILE STT executes in another thread, so it adds
     no latency — the robot acknowledges instantly and STT finishes underneath."""
     wav = _wav_for_text(_thinking_phrase(lang))
+    beep = _beep_wav("think", THINK_TONES)
     if listener is not None:
         listener.mute()
     try:
-        if wav:
-            proc = subprocess.Popen(
-                ["aplay", "-D", SPEAKER, "-q", wav],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            _wait_or_kill(proc)
+        # Soft tick first: instant "I heard you, working on it" signal.
+        for w in (beep, wav):
+            if w:
+                proc = subprocess.Popen(
+                    ["aplay", "-D", SPEAKER, "-q", w],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                _wait_or_kill(proc)
     finally:
         if listener is not None:
             listener.unmute()

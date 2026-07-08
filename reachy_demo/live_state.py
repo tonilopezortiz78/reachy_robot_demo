@@ -64,6 +64,7 @@ class LiveState:
     pending_wake: bool = False
     pending_sleep: bool = False
     pending_say: str = ""
+    pending_shutdown: bool = False   # full demo stop: robot to sleep, process exits
 
     def snapshot(self) -> dict:
         u = time.time() - self.started_at
@@ -105,3 +106,6 @@ class LiveState:
 
     def request_say(self, text: str):
         self.pending_say = text.strip()[:200]
+
+    def request_shutdown(self):
+        self.pending_shutdown = True

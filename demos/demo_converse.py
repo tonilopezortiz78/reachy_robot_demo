@@ -896,6 +896,7 @@ def main():
                 face_thread.start()
 
             last_repeat = 0.0
+            web_muted = [False]   # dashboard Mute hold currently applied
 
             def ask_repeat():
                 nonlocal last_repeat
@@ -940,7 +941,29 @@ def main():
                                     speech_lock.release()
                             threading.Thread(target=_do_say, args=(say_text,), daemon=True).start()
 
-                    ev = events.get()
+                    # Web Mute button: state.muted was previously set by the
+                    # dashboard but never applied to anything. Reconcile it
+                    # with the (depth-counted) listener mute as its own hold.
+                    if state.muted != web_muted[0]:
+                        if state.muted:
+                            listener.mute()
+                            log.event("  [web] mic muted from dashboard")
+                        else:
+                            listener.unmute()
+                            log.event("  [web] mic unmuted from dashboard")
+                        web_muted[0] = state.muted
+
+                    if state.pending_shutdown:
+                        log.event("  [web] Stop requested from dashboard — shutting down.")
+                        break
+
+                    # Short timeout so dashboard requests (wake/sleep/say/stop)
+                    # apply promptly even when nobody is speaking — a bare
+                    # events.get() only serviced them on the next utterance.
+                    try:
+                        ev = events.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
                     if ev["type"] == "mic_error":
                         log.error("microphone", RuntimeError(ev["reason"]))
                         break
@@ -952,6 +975,12 @@ def main():
                         speech_ok, sm = is_real_speech(pcm, gate_vad)
                         if not speech_ok:
                             log.event(f"  [gate] ignored noise — {sm['reject_reason']}")
+                            # Keep gated audio in the black box: when a real
+                            # request is wrongly rejected (e.g. the missed
+                            # "dance macarena"), we can replay what the gate
+                            # actually heard instead of guessing.
+                            if recorder is not None:
+                                recorder.add_audio(pcm, "gated")
                             continue
                         last_voice_at[0] = time.time()
                         if last_face_results[0]:
