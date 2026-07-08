@@ -28,10 +28,15 @@ echo "║  6) Talk to Reachy  🚀 Instant                       ║"
 echo "║     Streaming voice — starts talking almost          ║"
 echo "║     immediately (~0.4 s to first word)               ║"
 echo "║                                                      ║"
+echo "║  7) Reachy Unified  🤖💬                             ║"
+echo "║     Instant talk + face ID + web dashboard          ║"
+echo "║     Camera + status at  http://localhost:8080       ║"
+echo "║     Faces: drop photos in faces/<name>/             ║"
+echo "║                                                      ║"
 echo "║  q) Quit                                             ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
-read -p "Pick [1-6/q]: " choice
+read -p "Pick [1-7/q]: " choice
 
 case $choice in
   1) ./run.sh demos/demo_welcome.py ;;
@@ -40,6 +45,7 @@ case $choice in
   4) ./run.sh demos/demo_tools7.py ;;
   5) ./run.sh demos/demo_deepseek.py ;;
   6) ./run.sh demos/demo_instant.py ;;
+  7) ./run.sh demos/demo_converse.py ;;
   q|Q) echo "Bye!"; exit 0 ;;
-  *) echo "Please pick 1-6 or q."; exit 1 ;;
+  *) echo "Please pick 1-7 or q."; exit 1 ;;
 esac

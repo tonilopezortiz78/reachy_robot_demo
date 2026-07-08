@@ -142,16 +142,32 @@ subprocess.Popen(["aplay", "-D", "plughw:CARD=Audio,DEV=0", "-q", wav_path])
 |------|------|-------|----------|
 | 1 | demo_welcome.py | edge-tts (AvaMultilingual) | Greeting + sine-wave animation |
 | 2 | demo_dance.py | edge-tts (AvaMultilingual) | Macarena show, beat-synced |
-| 3 | demo_talk_ns.py | Piper (offline, en-US-amy) | NS ambassador, works without internet |
-| 4 | demo_face_recognition.py | edge-tts (AvaMultilingual) | Greets visitors by name |
-| 5 | demo_edge.py | edge-tts (AvaMultilingual) | NS ambassador, any language |
-| 6 | demo_dialog.py | edge-tts (AvaMultilingual) | Barge-in, continuous listening, gestures |
-| 7 | demo_tools7.py | edge-tts (AvaMultilingual) | Parallel AI gesture picker, barge-in, any language |
+| 3 | demo_face_recognition.py | edge-tts (AvaMultilingual) | Greets visitors by name |
+| 4 | demo_tools7.py | edge-tts (AvaMultilingual) | Parallel AI gesture picker, barge-in, any language |
+| 5 | demo_deepseek.py | edge-tts (AvaMultilingual) | Like #4 but uses `opencode run` (DeepSeek V4 Flash) as LLM harness; STT still via Groq; ~8s latency |
+| 6 | demo_instant.py | edge-tts (AvaMultilingual, streaming) | Streaming TTS — starts talking ~0.4s after LLM produces a sentence |
+| 7 | demo_converse.py | edge-tts (AvaMultilingual) | Unified: instant talk + face ID + web dashboard |
 
-**Character rules shared by all talking demos (5, 6, 7):**
+**Character rules shared by all talking demos (4, 5, 6, 7):**
 - 1 sentence, 10 words max — enforced in system prompt AND via `max_tokens=45`
 - CRITICAL LANGUAGE RULE at top of every system prompt — robot matches user's language and switches mid-conversation
 - No arms, no legs yet — Reachy acknowledges this with self-deprecating humour if asked
+
+## demo_converse.py (menu 7 — unified)
+
+The unified demo: instant talk + face ID + web dashboard in one process.
+
+- **LLM:** uses Cerebras if `CEREBRAS_API_KEY` is set in `.env` (OpenAI-compatible,
+  same Llama-4-scout, ~2× faster), otherwise falls back to Groq. STT is always Groq.
+- **Face ID:** YuNet (detect) + SFace (recognise), Apache-2.0. Weights auto-download
+  to `cache/models/` on first run. Falls back to dlib if OpenCV face modules are
+  unavailable.
+- **Web dashboard:** FastAPI on `http://localhost:8080` — MJPEG `/video` (live camera
+  with face boxes), `/status` JSON, and `/api/wake|sleep|say|mute` controls. Frontend
+  auto-reconnects.
+- **Name onboarding:** when an unknown face is detected, Reachy asks the visitor's
+  name, captures a few frames, and adds them to the roster live (no restart needed).
+- **Speaker-lock gaze:** the head turns to track the face of whoever just spoke.
 
 ## Speech models (Groq)
 

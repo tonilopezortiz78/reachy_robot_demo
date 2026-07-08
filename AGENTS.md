@@ -14,7 +14,7 @@ the hardware/SDK story in full; this file adds what it misses.
 
 ```bash
 ./run.sh demos/<file>.py     # run a specific demo
-./menu.sh                    # interactive picker (8 demos)
+./menu.sh                    # interactive picker (7 demos)
 ```
 
 Always use `run.sh` — it prepends `.venv/bin` to `PATH`, which is required for
@@ -29,12 +29,16 @@ means you bypassed `run.sh`.
 |---|---|---|
 | 1 | `demo_welcome.py` | Greeting + speech with layered animation |
 | 2 | `demo_dance.py` | Full show with music. Swap `MUSIC = str(ROOT / "music" / "your.mp3")` |
-| 3 | `demo_talk_ns.py` | NS ambassador, offline Piper voice (needs `GROQ_API_KEY` in `.env`) |
-| 4 | `demo_face_recognition.py` | Greets known faces from `faces/<name>/*.jpg` |
-| 5 | `demo_edge.py` | NS ambassador, online edge-tts (`AvaMultilingual` voice, pitch `+16Hz` for a cute tone), any language |
-| 6 | `demo_dialog.py` | Fluid conversation — barge-in, 700 ms turn-take, high-threshold VAD during TTS |
-| 7 | `demo_tools7.py` | Parallel AI gesture picker + barge-in, any language (`AvaMultilingual` voice) |
-| 8 | `demo_deepseek.py` | Like #7 but uses `opencode run` as LLM harness (DeepSeek V4 Flash via opencode). STT still via Groq. ~8s LLM latency (opencode overhead) — thinking ticks cover the gap. Works well but slow — the `opencode run` subprocess overhead + model inference makes each turn ~8s. |
+| 3 | `demo_face_recognition.py` | Greets known faces from `faces/<name>/*.jpg` |
+| 4 | `demo_tools7.py` | Parallel AI gesture picker + barge-in, any language (`AvaMultilingual` voice) |
+| 5 | `demo_deepseek.py` | Like #4 but uses `opencode run` as LLM harness (DeepSeek V4 Flash via opencode). STT still via Groq. ~8s LLM latency (opencode overhead) — thinking ticks cover the gap. Works well but slow — the `opencode run` subprocess overhead + model inference makes each turn ~8s. |
+| 6 | `demo_instant.py` | Streaming TTS — edge-tts audio streamed to the speaker as it's generated, ~0.4s time-to-first-audio |
+| 7 | `demo_converse.py` | Unified: instant talk + face ID + web dashboard |
+
+Not in the menu (superseded by `demo_converse.py`):
+- `demo_dialog.py` — fluid conversation, barge-in, 700 ms turn-take, high-threshold VAD during TTS
+- `demo_edge.py` — NS ambassador, online edge-tts (`AvaMultilingual` voice, pitch `+16Hz`), any language
+- `demo_talk_ns.py` — NS ambassador, offline Piper voice (needs `GROQ_API_KEY` in `.env`)
 
 > Several docs (`CLAUDE.md`, `docs/README.md`, `docs/RUN_DEMOS.md`) still
 > reference `demos/demo1_moves.py` — that file no longer exists. Don't trust
@@ -48,11 +52,16 @@ Import these — do not reimplement in a demo:
 |---|---|
 | `daemon.py` | `start_daemon()`, `launch_daemon()`, `wait_for_daemon()`, `stop_daemon()` — manual daemon lifecycle, required because `spawn_daemon=True` is broken (see `CLAUDE.md`) |
 | `animator.py` | `Animator(mini)` background thread; `set_state(Animator.IDLE/LISTENING/THINKING/SPEAKING)` |
-| `audio.py` | `SPEAKER`, `MIC` constants; `blip`, `chirp`, `boot_beeps`, `listening_ping`, `your_turn_chime`, `thinking_blips`, `speaking_chime`, `error_chime`, `play_wav_blocking`, `record_utterance` (VAD via Silero), `pcm_to_wav_bytes` |
+| `audio.py` | `SPEAKER`, `MIC` constants; `blip`, `chirp`, `boot_beeps`, `listening_ping`, `start_thinking_ticks`, `thinking_cue`, `speaking_chime`, `error_chime`, `play_wav_blocking`, `record_utterance` (VAD via Silero), `pcm_to_wav_bytes` |
 | `tts_piper.py` | `load_voice`, `synth_to_file`, `synth_and_play` (offline) |
 | `tts_edge.py` | `synth_to_file`, `play_wav_blocking`; single `VOICE` constant (`en-US-AvaMultilingualNeural`, any language) plus `RATE`/`PITCH`/`VOL` tuning — `+16Hz` pitch gives the cute tone (online, needs internet) |
 | `text.py` | `SENTENCE_END` regex, `clean_for_tts` (strip markdown / roleplay emotes) |
 | `groq_client.py` | `load_api_key` (reads `.env` or env var), `transcribe`, `stream_chat` |
+| `camera.py` | `CameraHub` — shared OpenCV capture thread; `mjpeg_bytes()`, `frame_rgb()`, overlay hook |
+| `cerebras_client.py` | Optional Cerebras LLM accelerator (OpenAI-compatible, same Llama-4-scout, ~2× faster). `make_client()`, `stream_chat()`, `has_key()` |
+| `face_id.py` | `FaceIdentifier` — YuNet+SFace face ID (Apache-2.0). `identify()`, `add_person()`, `load_roster()`, `mirror` flag. Falls back to dlib |
+| `live_state.py` | `LiveState` — thread-safe bridge between demo loop and web dashboard. `snapshot()`, `request_wake()`, `request_sleep()`, `request_say()` |
+| `web_server.py` | `WebDashboard` — FastAPI on :8080; MJPEG `/video`, `/status` JSON, `/api/wake\|sleep\|say\|mute`. Auto-reconnect frontend |
 
 `run.sh` exports `PYTHONPATH` to the repo root, so `from reachy_demo.X import …`
 works from any demo.
@@ -71,8 +80,10 @@ with ReachyMini(connection_mode="localhost_only",
 ```
 
 `reachy_demo.daemon.start_daemon()` handles the manual daemon launch + port
-polling. See `CLAUDE.md` for the full boilerplate and the motion API table
-(`create_head_pose`, `goto_target` vs `set_target`, antenna/body kwargs).
+polling — used by every talking demo (including `demo_converse.py`) instead of
+the broken `spawn_daemon=True`. See `CLAUDE.md` for the full boilerplate and
+the motion API table (`create_head_pose`, `goto_target` vs `set_target`,
+antenna/body kwargs).
 
 ## Hard-won SDK gotchas (not in CLAUDE.md)
 
@@ -111,6 +122,11 @@ polling. See `CLAUDE.md` for the full boilerplate and the motion API table
 - `.env` — contains `GROQ_API_KEY`. **Gitignored. Never commit.** Read it via
   `reachy_demo.groq_client.load_api_key(ROOT)`, which supports both `KEY:value`
   and `KEY=value` formats and falls back to the environment variable.
+- `CEREBRAS_API_KEY` (optional) — if set in `.env`, `demo_converse.py` routes
+  LLM calls through Cerebras (OpenAI-compatible, same Llama-4-scout, ~2× faster
+  than Groq); falls back to Groq otherwise. Same `load_api_key` reader.
+- `cache/models/` — YuNet (face detect) + SFace (face ID) ONNX weights,
+  **gitignored**. Auto-downloaded on first run of `demo_converse.py`.
 
 ## Diagnostic tools (`tools/`)
 

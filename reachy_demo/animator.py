@@ -326,6 +326,7 @@ class Animator:
         self.mirror    = mirror   # flip yaw/roll/body_yaw signs (viewer perspective)
         self._moves    = moves_library  # RecordedMoves HF library, optional
         self._gesture_active = False
+        self._gaze_bias = (0.0, 0.0, 0.0)   # (yaw, pitch, body_yaw) radians — head-tracking offset
         self._thinking = _ThinkingAnimation()
         self._lock     = threading.Lock()
         self._stop     = threading.Event()
@@ -336,6 +337,15 @@ class Animator:
     def set_state(self, state):
         with self._lock:
             self.state = state
+
+    def set_gaze_bias(self, yaw: float, pitch: float, body_yaw: float) -> None:
+        """Additive head-tracking offset applied on top of the base+aliveness pose.
+        Clamped modestly so tracking alone can't saturate the pose envelope."""
+        y  = max(-0.30, min(0.30, yaw))
+        p  = max(-0.18, min(0.18, pitch))
+        by = max(-0.20, min(0.20, body_yaw))
+        with self._lock:
+            self._gaze_bias = (y, p, by)
 
     def pause(self):
         """Pause the animation loop — hand full servo control to caller."""
@@ -460,6 +470,12 @@ class Animator:
                     by += byo
                     al += alo
                     ar += aro
+
+                with self._lock:
+                    gy, gp, gby = self._gaze_bias
+                y  += gy
+                p  += gp
+                by += gby
 
                 if self.mirror:
                     _send(self.mini, p, -y, -r, -by, al, ar)

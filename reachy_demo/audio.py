@@ -5,7 +5,7 @@ Covers:
   - Hardware constants (SPEAKER, MIC)
   - Tone generators (_beep, blip, chirp)
   - Named sound effects (listening_ping, speaking_chime, error_chime,
-    your_turn_chime, boot_beeps, thinking_blips, start_thinking_ticks)
+    boot_beeps, thinking_cue, start_thinking_ticks)
   - play_wav_blocking() — play a WAV file on the robot speaker, blocking
   - VAD constants and record_utterance() — full VAD capture loop
   - pcm_to_wav_bytes() — wrap raw PCM in a WAV container
@@ -543,24 +543,6 @@ def listening_ping():
     chirp(600, 1400, 0.08, vol=0.38, block=False)
 
 
-def your_turn_chime():
-    """4-note rising fanfare: robot finished, your turn."""
-    for f, d in [(550, 0.06), (750, 0.06), (1050, 0.07), (1500, 0.09)]:
-        blip(f, d, 0.52, block=True)
-        time.sleep(0.04)
-    time.sleep(0.02)
-    chirp(1500, 900, 0.07, vol=0.30, block=True)
-
-
-def thinking_blips():
-    """4 descending blips + 1 ascending — 'computing' feel."""
-    for f in [900, 720, 560, 420]:
-        blip(f, 0.05, 0.22, block=True)
-        time.sleep(0.035)
-    time.sleep(0.02)
-    blip(650, 0.06, 0.28, block=True)
-
-
 def start_thinking_ticks(stop_event: threading.Event) -> threading.Thread:
     """
     Background thinking sounds. Randomly selects from several 'phrases' so it
@@ -683,17 +665,7 @@ def error_chime():
 
 
 # ── Conversation state cues (clear & distinct) ────────────────────────────────
-# Two unmistakable signals so the user always knows whose turn it is:
-#   ready_cue()    — bright RISING two-note "beep-BOOP↑" = "I'm ready, your turn!"
 #   thinking_cue() — soft  FALLING  "boo-doo↓" pulse     = "let me think..."
-# Rising = your turn to talk; falling = I'm busy thinking. Easy to tell apart.
-
-def ready_cue():
-    """'I'm ready — talk to me now!' Bright rising two-tone. Blocking (no rush here)."""
-    blip(784, 0.10, 0.48, block=True)    # G5
-    time.sleep(0.03)
-    blip(1245, 0.16, 0.55, block=True)   # D#6 — rising = open invitation to speak
-
 
 def thinking_cue():
     """'Let me think...' Gentle descending sweep. NON-blocking so STT starts instantly."""
