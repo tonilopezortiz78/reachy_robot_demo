@@ -18,16 +18,22 @@ it just lets Reachy charmingly bring up things it has heard before.
 """
 import json
 import os
+import re
 import threading
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 MEM_FILE = ROOT / "memory" / "reachy_memory.json"
+PEOPLE_DIR = ROOT / "cache" / "people"
 
 MAX_MEMORIES = 60        # hard cap on stored notes (oldest dropped)
 PROMPT_MEMORIES = 10     # how many most-recent notes to put in the system prompt
 
+MAX_PERSON_FACTS = 25    # hard cap on stored facts per person (oldest dropped)
+PROMPT_PERSON_FACTS = 8  # how many most-recent facts to put in the system prompt
+
 _lock = threading.Lock()
+_person_lock = threading.Lock()
 
 
 def load_memories() -> list[str]:
@@ -123,3 +129,105 @@ def extract_memories(client, model: str, user_text: str, reply_text: str) -> lis
         if f and f.upper() != "NONE":
             facts.append(f)
     return facts[:2]
+
+
+# --- Per-person memory ------------------------------------------------------
+# Additional, separate from the global pool above: durable facts tied to a
+# specific recognized person (e.g. "Tony is from Spain"), so the robot can
+# recall them the next time it recognizes that same face. Stored one JSON
+# file per person under cache/people/ so the existing global memory file and
+# its callers are completely unaffected.
+
+def _person_slug(name: str) -> str:
+    """Filesystem-safe slug for a person's name. '' for empty/unknown/visitor."""
+    if not name:
+        return ""
+    name = name.strip().lower()
+    if not name or name == "visitor":
+        return ""
+    slug = re.sub(r"\s+", "_", name)
+    slug = re.sub(r"[^a-z0-9_]", "", slug)
+    return slug
+
+
+def _person_path(name: str) -> Path:
+    """Path to the per-person facts file for `name` (may not exist yet)."""
+    slug = _person_slug(name)
+    return PEOPLE_DIR / f"{slug}.json"
+
+
+def load_person_facts(name: str) -> list[str]:
+    """Return the stored facts for `name` (oldest→newest). [] if none/unknown/visitor."""
+    slug = _person_slug(name)
+    if not slug:
+        return []
+    try:
+        data = json.loads(_person_path(name).read_text())
+        facts = data.get("facts") if isinstance(data, dict) else None
+        return [f for f in facts if isinstance(f, str)] if isinstance(facts, list) else []
+    except Exception:
+        return []
+
+
+def remember_person(name: str, facts) -> None:
+    """Add one or more short facts about `name` (str or list of str),
+    case-insensitively de-duplicated and capped at MAX_PERSON_FACTS. No-op if
+    name is empty/"visitor". Never raises."""
+    slug = _person_slug(name)
+    if not slug:
+        return
+    if isinstance(facts, str):
+        facts = [facts]
+    try:
+        facts = [f.strip() for f in facts if f and f.strip()]
+    except Exception:
+        return
+    if not facts:
+        return
+    try:
+        with _person_lock:
+            existing = load_person_facts(name)
+            seen = {f.lower() for f in existing}
+            for f in facts:
+                if f.lower() not in seen:
+                    existing.append(f)
+                    seen.add(f.lower())
+            existing = existing[-MAX_PERSON_FACTS:]
+            path = _person_path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(
+                {"name": name.strip(), "facts": existing},
+                ensure_ascii=False, indent=2,
+            ))
+            os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def person_summary_block(name: str) -> str:
+    """Render the most-recent facts about `name` as a compact system-prompt
+    block. '' if no facts / unknown / visitor."""
+    facts = load_person_facts(name)
+    recent = facts[-PROMPT_PERSON_FACTS:]
+    if not recent:
+        return ""
+    lines = "\n".join(f"- {f}" for f in recent)
+    return f"What you remember about {name.strip()}:\n{lines}"
+
+
+def known_people() -> list[str]:
+    """Names of all people with a stored profile file. [] if none / unreadable."""
+    try:
+        PEOPLE_DIR.mkdir(parents=True, exist_ok=True)
+        names = []
+        for path in sorted(PEOPLE_DIR.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+                name = data.get("name") if isinstance(data, dict) else None
+                names.append(name if isinstance(name, str) and name else path.stem)
+            except Exception:
+                continue
+        return names
+    except Exception:
+        return []

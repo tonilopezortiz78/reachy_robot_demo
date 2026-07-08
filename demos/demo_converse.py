@@ -94,7 +94,9 @@ GREET_COOLDOWN_S = 90.0
 CAM_W, CAM_H = 640, 360
 
 YAW_GAIN, PITCH_GAIN, BODY_GAIN = 0.55, 0.28, 0.80
-HEAD_ALPHA, BODY_ALPHA = 0.18, 0.06
+# Higher alpha = snappier follow. The 5% deadband below keeps micro-jitter out,
+# so these can be well above the old 0.18/0.06 without oscillating.
+HEAD_ALPHA, BODY_ALPHA = 0.35, 0.12
 LOST_TIMEOUT = 2.5
 ARRIVAL_GAP_S = 5.0        # scene empty this long → next face is a "fresh arrival"
 ANT_EXCITED, ANT_IDLE, ANT_DROOP = 0.70, 0.15, -0.25

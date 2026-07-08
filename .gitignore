@@ -13,6 +13,9 @@ voices/*.onnx
 # Music — copyrighted tracks stay local
 music/macarena.mp3
 
+# Face roster photos — personal data, never commit
+faces/
+
 # Generated/recorded files
 recordings/
 audio/

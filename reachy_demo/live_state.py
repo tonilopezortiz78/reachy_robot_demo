@@ -49,6 +49,13 @@ class LiveState:
 
     # LLM provider in use
     llm_provider: str = "groq"         # groq | cerebras
+    llm_model: str = ""                # e.g. "gemma-4-31b" (shown only in the Costs tab)
+    tokens_in: int = 0                 # cumulative estimated input tokens this session
+    tokens_out: int = 0                # cumulative estimated output tokens this session
+    est_cost_usd: float = 0.0          # cumulative estimated cost, USD
+
+    # Current known speaker
+    person_summary: str = ""           # short profile of the current known speaker
 
     # Floor control
     muted: bool = False
@@ -82,6 +89,11 @@ class LiveState:
             "faces_visible": self.faces_visible,
             "known_person_count": self.known_person_count,
             "llm_provider": self.llm_provider,
+            "llm_model": self.llm_model,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "est_cost_usd": round(self.est_cost_usd, 6),
+            "person_summary": self.person_summary[:400],
             "muted": self.muted,
         }
 
