@@ -76,36 +76,68 @@ html,body{height:100%;background:#0a0a0a;color:#fff;font-family:'Segoe UI',syste
 .view.active{display:block}
 
 /* ════════════════════════════════════════════════════════════════
-   STAGE VIEW (projector) — terminal-style live console
+   STAGE VIEW (projector) — kid-friendly educational dashboard
    ════════════════════════════════════════════════════════════════ */
 #stage-view{display:none}
-#stage-view.active{display:grid;grid-template-columns:1.5fr 1fr;grid-template-rows:1fr auto;gap:10px;padding:54px 10px 10px;transition:background-color .6s ease}
-#stage-view.speaking{background:#0c1a2e}
-#stage-view.listening{background:#0a1f0e}
-#stage-view.thinking{background:#1f1408}
-#stage-view.idle{background:#0a0a0a}
-#cam-stage{grid-row:1/3;position:relative;background:#000;border-radius:12px;overflow:hidden;border:2px solid #1f2937}
+#stage-view.active{display:grid;grid-template-columns:1.5fr 1fr;grid-template-rows:1fr auto;gap:8px;padding:54px 8px 8px;transition:background-color .8s ease}
+#stage-view.speaking{background:linear-gradient(135deg,#0c1445 0%,#0a1a2e 50%,#0c1445 100%)}
+#stage-view.listening{background:linear-gradient(135deg,#0a2e0a 0%,#0a1f0e 50%,#0a2e0a 100%)}
+#stage-view.thinking{background:linear-gradient(135deg,#1f1408 0%,#2a1a06 50%,#1f1408 100%)}
+#stage-view.idle{background:linear-gradient(135deg,#0a0a0a 0%,#111 50%,#0a0a0a 100%)}
+#stage-view.dancing{background:linear-gradient(135deg,#1a0a2e 0%,#2e0a2e 50%,#1a0a2e 100%);animation:party 0.6s ease-in-out infinite}
+@keyframes party{0%,100%{background:linear-gradient(135deg,#1a0a2e,#2e0a2e)}50%{background:linear-gradient(135deg,#2e1a0a,#2e0a1a)}}
+#cam-stage{grid-row:1/3;position:relative;background:#000;border-radius:12px;overflow:hidden;border:2px solid rgba(255,255,255,.1)}
 #cam-stage img{width:100%;height:100%;object-fit:cover}
-#tracker-bar{position:absolute;bottom:0;left:0;right:0;display:flex;gap:6px;padding:8px;background:rgba(0,0,0,.75);overflow-x:auto;min-height:42px;align-items:center}
-.face-tag{display:flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;font-size:1rem;font-weight:700;white-space:nowrap;flex-shrink:0;backdrop-filter:blur(4px)}
-.face-tag.known{background:rgba(34,197,94,.25);border:1px solid rgba(34,197,94,.5);color:#bbf7d0}
-.face-tag.visitor{background:rgba(59,130,246,.25);border:1px solid rgba(59,130,246,.5);color:#bfdbfe}
-.face-tag .conf{font-size:.7rem;opacity:.7;font-weight:400}
-#state-badge{position:absolute;top:12px;left:12px;padding:6px 16px;border-radius:999px;font-size:1.1rem;font-weight:800;letter-spacing:2px;backdrop-filter:blur(4px);background:rgba(0,0,0,.5)}
-#gesture-emoji{position:absolute;top:12px;right:12px;font-size:2rem;font-weight:800;text-shadow:0 0 14px rgba(0,0,0,.9);color:#fbbf24}
-/* right: terminal console */
-#con{display:flex;flex-direction:column;gap:6px;overflow:hidden}
-#con-log{flex:1;overflow-y:auto;font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:1.1rem;line-height:1.5;padding:8px 12px;background:#0c0c0c;border-radius:10px;border:2px solid #1f2937;min-height:0}
-.log-line{padding:3px 0;border-bottom:1px solid #1a1a1a;animation:fk .3s}
-@keyframes fk{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
-.log-line .time{color:#374151;margin-right:8px;font-size:.7rem}
-.log-line .glyph{font-size:1.1rem;margin-right:6px}
-.log-line.listening{color:#86efac}.log-line.heard{color:#93c5fd}.log-line.thinking{color:#fde68a}.log-line.speaking{color:#93c5fd;font-weight:700}.log-line.gesture{color:#fbbf24}.log-line.done{color:#64748b}
-#con-current{flex-shrink:0;padding:10px 14px;background:#111827;border-radius:10px;border:2px solid #1f2937;font-size:1.4rem;font-weight:700;min-height:2.8em;display:flex;align-items:center;gap:10px}
-#con-current .glyph{font-size:1.6rem}
-#con-current .blink{display:inline-block;width:4px;height:1.8rem;background:currentColor;margin-left:4px;animation:bk 1s steps(2) infinite}
+
+/* ── Face tracker badges (bottom of camera) ── */
+#tracker-bar{position:absolute;bottom:0;left:0;right:0;display:flex;gap:6px;padding:10px;background:rgba(0,0,0,.7);overflow-x:auto;min-height:50px;align-items:center}
+.face-tag{display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:999px;font-size:1.1rem;font-weight:800;white-space:nowrap;flex-shrink:0;animation:popin .3s ease}
+@keyframes popin{from{transform:scale(.5);opacity:0}to{transform:scale(1);opacity:1}}
+.face-tag.known{background:rgba(34,197,94,.3);border:2px solid rgba(34,197,94,.6);color:#bbf7d0}
+.face-tag.visitor{background:rgba(96,165,250,.3);border:2px solid rgba(96,165,250,.6);color:#bfdbfe}
+
+/* ── State badge (top-left of camera) ── */
+#state-badge{position:absolute;top:12px;left:12px;padding:8px 20px;border-radius:999px;font-size:1.2rem;font-weight:900;letter-spacing:2px;backdrop-filter:blur(8px);background:rgba(0,0,0,.6);text-transform:uppercase;transition:background .3s}
+#state-badge.speaking{background:rgba(59,130,246,.5);animation:pulse-bt 1s ease-in-out infinite}
+#state-badge.listening{background:rgba(34,197,94,.5);animation:pulse-bt 1.2s ease-in-out infinite}
+#state-badge.thinking{background:rgba(245,158,11,.5);animation:pulse-bt .8s ease-in-out infinite}
+#state-badge.dancing{background:rgba(168,85,247,.5);animation:pulse-bt .4s ease-in-out infinite}
+@keyframes pulse-bt{0%,100%{box-shadow:0 0 10px currentColor}50%{box-shadow:0 0 30px currentColor,0 0 60px currentColor}}
+
+/* ── Right side: info panels ── */
+#right-panels{display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.info-card{background:rgba(255,255,255,.05);border-radius:14px;padding:16px 18px;border:1px solid rgba(255,255,255,.1);transition:all .4s}
+.info-card h2{font-size:.7rem;text-transform:uppercase;letter-spacing:2px;margin-bottom:8px;opacity:.6}
+
+/* status icon + big text */
+#big-status{min-height:90px;display:flex;align-items:center;gap:16px}
+#big-icon{font-size:3.5rem;animation:float 2s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+#big-text{font-size:1.6rem;font-weight:800;line-height:1.3;flex:1}
+#big-text .highlight{color:#fbbf24}
+#big-text .small{font-size:.9rem;opacity:.6;font-weight:400;display:block;margin-top:4px}
+
+/* speech bubble */
+#speech-bubble{background:rgba(59,130,246,.15);border:2px solid rgba(59,130,246,.4);border-radius:16px;padding:16px 18px;min-height:60px;font-size:1.5rem;font-weight:700;color:#fff;line-height:1.3;display:flex;align-items:center;transition:all .3s}
+#speech-bubble:empty,#speech-bubble.disabled{opacity:.25;min-height:0;padding:10px;font-size:.9rem;color:#64748b}
+#speech-bubble .blink{display:inline-block;width:3px;height:1.6rem;background:#93c5fd;margin-left:4px;animation:bk .8s steps(2) infinite}
 @keyframes bk{50%{opacity:0}}
-#stage-footer{grid-column:2;font-size:.7rem;color:#374151;text-align:right}
+#speech-bubble.listening{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.3)}
+#speech-bubble.thinking{background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3)}
+
+/* fun fact panel */
+#fun-fact{min-height:40px;font-size:.95rem;color:#94a3b8;line-height:1.4;display:flex;align-items:center;gap:8px}
+#fun-fact .icon{font-size:1.5rem}
+
+/* faces panel */
+#faces-list{display:flex;gap:6px;flex-wrap:wrap;min-height:30px;align-items:center}
+.face-badge{display:flex;align-items:center;gap:4px;padding:5px 12px;border-radius:999px;font-size:.9rem;font-weight:700;animation:popin .3s ease}
+.face-badge.know{background:rgba(34,197,94,.2);border:1px solid rgba(34,197,94,.5);color:#bbf7d0}
+.face-badge.new{background:rgba(96,165,250,.2);border:1px solid rgba(96,165,250,.5);color:#bfdbfe}
+
+/* footer */
+#stage-footer{grid-column:2;display:flex;justify-content:space-between;font-size:.7rem;color:#374151;padding:0 4px}
+
 
 /* ════════════════════════════════════════════════════════════════
    CONTROL VIEW (operator laptop)
@@ -153,14 +185,18 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
   <div id="cam-stage">
     <img id="feed-stage" src="/video" alt="camera" onerror="reconnect('feed-stage')">
     <div id="state-badge">IDLE</div>
-    <div id="gesture-emoji"></div>
-    <div id="tracker-bar"><span style="color:#64748b;font-size:.85rem">no faces</span></div>
+    <div id="tracker-bar"><span style="color:rgba(255,255,255,.3);font-size:.85rem">waiting for friends</span></div>
   </div>
-  <div id="con">
-    <div id="con-log"></div>
-    <div id="con-current"><span style="color:#64748b">...</span></div>
+  <div id="right-panels">
+    <div id="big-status" class="info-card">
+      <div id="big-icon">🤖</div>
+      <div id="big-text">Ready!<span class="small">Reachy is waiting to meet you</span></div>
+    </div>
+    <div id="speech-bubble" class="disabled">...</div>
+    <div id="faces-list" class="info-card"><h2>Friends nearby</h2><span style="color:rgba(255,255,255,.3)">come say hello!</span></div>
+    <div id="fun-fact" class="info-card"><span class="icon">💡</span>Reachy's lost brother Pixel vanished one firmware update ago!</div>
   </div>
-  <div id="stage-footer">NS Reachy Mini · <span id="s-lang-stage">-</span> · <span id="s-face-count">0</span> faces</div>
+  <div id="stage-footer"><span>Network School</span><span>Reachy Mini · <span id="s-lang-stage">-</span></span></div>
 </div>
 
 <!-- ═══ CONTROL VIEW ═══ -->
@@ -272,67 +308,59 @@ function connect(){
 }
 connect();
 
-/* ── render ── */
-let lastAnim='idle',lastUser='',lastGesture='',lastPartial='',lastSpeech='',lastFaceName='-',lastFaces=0;
+/* ── render (stage + control) ── */
+let lastAnim='idle',lastSpeech='',lastFaceN='',factT=0,factI=0;
 function esc(t){return String(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function fmt(s){if(!s||s<0)return'-';return s.toFixed(2)+'s';}
-function now(){const d=new Date();return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')+':'+d.getSeconds().toString().padStart(2,'0');}
-function logLine(cls,glyph,text){const l=document.createElement('div');l.className='log-line '+cls;l.innerHTML='<span class="time">'+now()+'</span><span class="glyph">'+glyph+'</span>'+esc(text);const con=$('con-log');con.appendChild(l);con.scrollTop=con.scrollHeight;if(con.children.length>80)con.firstChild.remove();}
+const ICON_EMOJI={idle:'💤',listening:'👂',thinking:'🧠',speaking:'💬',dancing:'🕺'};
+const STATUS=[{idle:'Ready!',sub:'Reachy is waiting to meet you'},{listening:'Listening!',sub:'Reachy hears you...'},{thinking:'Thinking...',sub:'Reachy is figuring it out!'},{speaking:'Speaking!',sub:'Reachy is replying now'},{dancing:'Dancing!',sub:'Reachy is grooving!'}];
+const FACTS=['Reachy wants arms and legs someday!','Reachy\'s lost brother Pixel vanished one firmware update ago!','Network School has 2,000+ members from 80+ countries!','Reachy can speak ANY language — try it!','Reachy\'s antennas are like little hands waving hello!','Build the next Harvard, don\'t just attend it!','Reachy runs at 136 BPM dancing Happy Hop!','Reachy remembers you — say your name!','Reachy dreams of starting an NS Robotics Club!'];
 function render(s){
   const st=s.anim_state||'idle';
   const sv=$('stage-view');
   sv.className='view'+(sv.classList.contains('active')?' active':'')+' '+st;
   // state badge
   const badge=$('state-badge');
-  badge.textContent=STATE_L[st]||st.toUpperCase();
-  badge.style.background=STATE_C[st]||'#4b5563';
-  badge.className=(st==='speaking'||st==='listening')?'pulse':'';
-  // gesture emoji
-  const g=s.current_gesture||'';
-  $('gesture-emoji').textContent=G_E[g]||'';
-  // state transition log
-  if(st!==lastAnim){
-    const em={idle:'Zz',listening:'mic',thinking:'brain',speaking:'spk'};
-    logLine(st,em[st]||'.',STATE_L[st]||st);
-    lastAnim=st;
-  }
-  // user speech log
-  if(s.last_user&&s.last_user!==lastUser){
-    logLine('heard','ear',s.last_user);
-    lastUser=s.last_user;
-  }
-  // current caption: speech > thinking > listening
+  badge.textContent=({idle:'IDLE',listening:'Listening',thinking:'Thinking',speaking:'Speaking',dancing:'Dancing'})[st]||st;
+  badge.className=st;
+  // big icon + message
+  const msgs={idle:'Ready!',listening:'Listening!',thinking:'Thinking...',speaking:'Speaking!',dancing:'Dancing!'};
+  const subs={idle:'Reachy is ready',listening:'Reachy hears you',thinking:'Reachy is thinking',speaking:'Reachy is replying',dancing:'Party time!'};
+  $('big-icon').textContent={idle:'💤',listening:'👂',thinking:'🧠',speaking:'💬',dancing:'🕺'}[st]||'🤖';
+  $('big-text').innerHTML=msgs[st]+'<span class="small">'+subs[st]+'</span>';
+  // speech bubble
+  const sp=$('speech-bubble');
   const speech=s.current_speech||'';
-  const partial=s.llm_partial||'';
-  const cur=$('con-current');
   if(speech&&speech!==lastSpeech){
-    cur.innerHTML='<span style="color:#93c5fd;font-size:1.5rem">speak</span>'+esc(speech)+'<span class="blink" style="background:#93c5fd"></span>';
-    lastSpeech=speech;
-  }else if(!speech&&st==='thinking'&&partial&&partial!==lastPartial){
-    cur.innerHTML='<span style="color:#fde68a;font-size:1.5rem">think</span><span style="color:#fbbf24;font-style:italic">\u201c'+esc(partial.slice(-80))+'\u201d</span>';
-    lastPartial=partial;
+    sp.className='speaking';sp.innerHTML=esc(speech)+'<span class="blink"></span>';lastSpeech=speech;
+  }else if(!speech&&s.llm_partial){
+    sp.className='thinking';sp.innerHTML='<span style="color:#fbbf24;font-style:italic">'+esc(s.llm_partial.slice(-100))+'...</span>';lastSpeech='';
   }else if(!speech&&st==='listening'){
-    cur.innerHTML='<span style="color:#86efac;font-size:1.5rem">listen</span><span style="color:#86efac">Waiting for you...</span>';
-    lastSpeech='';lastPartial='';
-  }else if(!st||st==='idle'){
-    cur.innerHTML='<span style="color:#64748b;font-size:1.5rem">Zz</span><span style="color:#64748b">Ready.</span>';
-    lastSpeech='';lastPartial='';
+    sp.className='listening';sp.innerHTML='<span style="color:rgba(255,255,255,.35)">Say something! Reachy can hear you...</span>';lastSpeech='';
+  }else if(!speech){
+    sp.className='disabled';sp.innerHTML='...';lastSpeech='';
+  }
+  // faces list
+  const fl=$('faces-list');
+  const fc=s.faces_visible||0;
+  if(fc>0&&s.last_face_name&&s.last_face_name!=='-'&&s.last_face_conf>0.45){
+    fl.innerHTML='<h2>Friends nearby</h2><div class="face-badge know">👋 '+esc(s.last_face_name)+'</div>'+(fc>1?'<div class="face-badge new">+'+String(fc-1)+' more</div>':'');
+  }else if(fc>0){
+    fl.innerHTML='<h2>Friends nearby</h2><div class="face-badge new">👀 '+fc+' person(s) nearby</div>';
+  }else{
+    fl.innerHTML='<h2>Friends nearby</h2><span style="color:rgba(255,255,255,.25)">come say hello!</span>';
   }
   // face tracker bar
-  const fc=s.faces_visible||0;
-  $('s-face-count').textContent=fc;
-  if(fc>0&&(fc!==lastFaces||s.last_face_name!==lastFaceName)){
-    const bar=$('tracker-bar');
-    let html='';
-    if(s.last_face_name&&s.last_face_name!=='-'&&s.last_face_conf>0.45){
-      html+='<div class="face-tag known">'+esc(s.last_face_name)+'<span class="conf">'+Math.round(s.last_face_conf*100)+'%</span></div>';
-    }
-    if(fc>1){html+='<div class="face-tag visitor">+'+String(fc-1)+' more</div>';}
-    else if(!html&&fc>0){html+='<div class="face-tag visitor">'+fc+' face(s)</div>';}
-    bar.innerHTML=html||'<span style="color:#64748b;font-size:.85rem">tracking...</span>';
-    lastFaces=fc;lastFaceName=s.last_face_name||'-';
+  if(fc>0&&s.last_face_name&&s.last_face_name!=='-'&&s.last_face_conf>0.45&&s.last_face_name!==lastFaceN){
+    $('tracker-bar').innerHTML='<div class="face-tag known">👋 '+esc(s.last_face_name)+'</div>'+(fc>1?'<div class="face-tag visitor">+'+String(fc-1)+'</div>':'');
+    lastFaceN=s.last_face_name;
+  }else if(fc===0&&lastFaceN!==''){
+    $('tracker-bar').innerHTML='<span style="color:rgba(255,255,255,.25);font-size:.85rem">waiting for friends</span>';
+    lastFaceN='';
   }
-  // lang + faces footer
+  // fun fact rotator (every 7s)
+  const n=Date.now();
+  if(n-factT>7000){factI=(factI+1)%FACTS.length;factT=n;$('fun-fact').innerHTML='<span class="icon">💡</span>'+FACTS[factI];}
+  // lang
   $('s-lang-stage').textContent=s.current_lang||'-';
   // === control panel fields ===
   $('s-robot').textContent=s.robot_online?'online':'offline';
