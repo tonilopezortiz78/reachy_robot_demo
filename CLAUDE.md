@@ -158,7 +158,7 @@ subprocess.Popen(["aplay", "-D", "plughw:CARD=Audio,DEV=0", "-q", wav_path])
 The unified demo: instant talk + face ID + web dashboard in one process.
 
 - **LLM:** uses Cerebras if `CEREBRAS_API_KEY` is set in `.env` (OpenAI-compatible,
-  same Llama-4-scout, ~2× faster), otherwise falls back to Groq. STT is always Groq.
+  model gemma-4-31b, ~2× faster), otherwise falls back to Groq. STT is always Groq.
 - **Face ID:** YuNet (detect) + SFace (recognise), Apache-2.0. Weights auto-download
   to `cache/models/` on first run. Falls back to dlib if OpenCV face modules are
   unavailable.

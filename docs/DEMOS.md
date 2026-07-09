@@ -1,5 +1,7 @@
 # Reachy Mini — Demo Reference
 
+> **STALE** — this table is out of date. Trust `menu.sh` and `ls demos/` for the current demo list. See `AGENTS.md`.
+
 All demos run via `./run.sh demos/<file>.py` or through `./menu.sh`.
 
 ---

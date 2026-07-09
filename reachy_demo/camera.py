@@ -11,7 +11,7 @@ Provides:
     jpg = hub.mjpeg_bytes()           # bytes ready for HTTP /video multipart
     rgb = hub.frame_rgb()             # np.ndarray for face-id / vision
     hub.last_boxes                    # list[(box, name, conf, track_id)] set by face-id
-    hub.set_overlay(drawer)          # optional overlay fn(frame_bgr)->frame_bgr
+    hub.overlay = drawer             # optional overlay fn(frame_bgr)->frame_bgr
     hub.stop()
 """
 

@@ -287,3 +287,298 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None,
                          body_yaw=0.0, duration=0.5)
         time.sleep(0.6)
         anim.resume()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DANCE 2: "Robot Wave" — to blipotron.mp3 (123 BPM)
+# A bouncy, choppy head-bob + antenna-flick dance. Cute, easy for kids to copy.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_WAVE_MUSIC = ROOT / "music" / "blipotron.mp3"
+_WAVE_BEAT = 0.4876   # 123.0 BPM
+
+# 6-pose wave cycle: head bobs side to side, antennas flick like waving hands,
+# body sways gently. Designed to look like a happy robot waving at kids.
+_WAVE_POSES = [
+    # (pitch, yaw, roll, body_yaw, [ant_left, ant_right])
+    ( 0.12,  0.25,  0.00,  0.35, [ 0.70,  0.10]),  # wave right — head tilt right, right antenna up
+    ( 0.06,  0.10,  0.08,  0.15, [ 0.40, -0.30]),  # bob down, antennas cross
+    (-0.02,  0.00,  0.00,  0.00, [-0.20, -0.20]),  # neutral dip — crouch
+    ( 0.12, -0.25,  0.00, -0.35, [ 0.10,  0.70]),  # wave left — mirror
+    ( 0.06, -0.10, -0.08, -0.15, [-0.30,  0.40]),  # bob down, antennas cross other way
+    (-0.02,  0.00,  0.00,  0.00, [-0.20, -0.20]),  # neutral dip — crouch
+]
+
+
+def do_robot_wave(mini, dances, emotions, anim, log=None, funny_text=None,
+                  music_duration=12.0):
+    """Robot Wave: bouncy head-bob + antenna-wave dance to blipotron.mp3.
+
+    Flow: chirp → music → 4 escalating cycles of the 6-pose wave →
+    music stops → 2s silent waving → big happy spin → speaks funny_text.
+
+    Cute factor: the antenna flicks look like waving little hands, and the
+    head bobs make it look giddy. Scale escalates 1.0→1.3→1.5 over cycles.
+    """
+    if log:
+        log.event("  [dance] Robot Wave starting!")
+    anim.pause()
+    music_proc = None
+    try:
+        excited_chirp()
+
+        ffmpeg_cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-stream_loop", "-1", "-i", str(_WAVE_MUSIC),
+            "-af", "volume=1.8",
+            "-t", str(music_duration), "-f", "alsa", SPEAKER,
+        ]
+        music_proc = subprocess.Popen(ffmpeg_cmd)
+        music_t0 = time.time()
+
+        # ── Happy entry wiggle (0.5 s) ──────────────────────────
+        mini.goto_target(head=create_head_pose(pitch=0.15, yaw=0.20, degrees=False),
+                         antennas=[0.50, 0.50], body_yaw=0.20, duration=0.12)
+        mini.goto_target(head=create_head_pose(pitch=0.15, yaw=-0.20, degrees=False),
+                         antennas=[-0.50, -0.50], body_yaw=-0.20, duration=0.12)
+        mini.goto_target(head=create_head_pose(pitch=0.10, yaw=0.0, degrees=False),
+                         antennas=[0.0, 0.0], body_yaw=0.0, duration=0.10)
+
+        # ── Snap to beat boundary ─────────────────────────────
+        elapsed = time.time() - music_t0
+        beat_offset = math.ceil(elapsed / _WAVE_BEAT)
+        wait_snap = music_t0 + beat_offset * _WAVE_BEAT - time.time()
+        if wait_snap > 0:
+            time.sleep(wait_snap)
+
+        # ── Beat-synced wave cycles ───────────────────────────
+        beat_count = 0
+        while time.time() - music_t0 < music_duration:
+            cycle = beat_count // len(_WAVE_POSES)
+            i = beat_count % len(_WAVE_POSES)
+            scale = 1.0 + min(cycle, 2) * 0.25  # 1.0 → 1.25 → 1.5
+
+            target_t = music_t0 + (beat_offset + beat_count) * _WAVE_BEAT
+            if target_t > music_t0 + music_duration:
+                break
+
+            _beat(mini, _WAVE_POSES[i], scale, target_t)
+            beat_count += 1
+
+            # Big happy spin at end of cycle 3
+            if i == len(_WAVE_POSES) - 1 and cycle == 3:
+                _spin360(mini)
+
+        music_proc.wait()
+        music_proc = None
+
+        # ── 2 s of silent waving (slower, winding down) ────────
+        silent_end = time.time() + 2.0
+        i = beat_count % len(_WAVE_POSES)
+        while time.time() < silent_end:
+            _beat(mini, _WAVE_POSES[i % len(_WAVE_POSES)], 1.2,
+                  time.time() + _WAVE_BEAT * 1.5)  # half-speed, sleepy
+            i += 1
+
+        # ── Happy spin + giggle pose ──────────────────────────
+        _spin360(mini)
+        mini.goto_target(head=create_head_pose(pitch=0.20, roll=0.10, degrees=False),
+                         antennas=[0.80, 0.80], body_yaw=0.0, duration=0.30)
+        time.sleep(0.30)
+
+        # ── Speak the funny line ──────────────────────────────
+        if funny_text:
+            wav = synth_to_file(funny_text)
+            if wav:
+                play_proc = subprocess.Popen(
+                    ["aplay", "-D", SPEAKER, "-q", wav],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                while play_proc.poll() is None:
+                    mini.goto_target(
+                        head=create_head_pose(pitch=0.08, yaw=0.12, degrees=False),
+                        antennas=[0.30, 0.30], body_yaw=0.0, duration=0.25)
+                    time.sleep(0.28)
+                    mini.goto_target(
+                        head=create_head_pose(pitch=0.08, yaw=-0.12, degrees=False),
+                        antennas=[0.30, 0.30], body_yaw=0.0, duration=0.25)
+                    time.sleep(0.28)
+                play_proc.wait()
+                Path(wav).unlink(missing_ok=True)
+
+    finally:
+        if music_proc is not None:
+            music_proc.kill()
+            music_proc.wait()
+        mini.goto_target(head=create_head_pose(), antennas=[0.0, 0.0],
+                         body_yaw=0.0, duration=0.5)
+        time.sleep(0.6)
+        anim.resume()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DANCE 3: "Happy Hop" — to kick_shock.mp3 (136 BPM)
+# An energetic jump + spin dance. Uses the slingshot _jump + _spin360 moves.
+# Peak energy — the "wow" finisher.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_HOP_MUSIC = ROOT / "music" / "kick_shock.mp3"
+_HOP_BEAT = 0.4412   # 136.0 BPM
+
+# 4-pose hop cycle: crouch → hop → spin-pose → land. Fast and bouncy.
+_HOP_POSES = [
+    # (pitch, yaw, roll, body_yaw, [ant_left, ant_right])
+    (-0.30,  0.00,  0.00,  0.00, [-0.40, -0.40]),  # crouch down — wind up
+    ( 0.35,  0.00,  0.00,  0.00, [ 0.90,  0.90]),  # hop up! antennas shoot up
+    ( 0.15,  0.35,  0.05,  0.80, [ 0.60, -0.40]),  # spin-pose right — head turns
+    ( 0.15, -0.35, -0.05, -0.80, [-0.40,  0.60]),  # spin-pose left — head turns
+]
+
+
+def do_happy_hop(mini, dances, emotions, anim, log=None, funny_text=None,
+                 music_duration=10.0):
+    """Happy Hop: energetic jump + spin dance to kick_shock.mp3.
+
+    Flow: chirp → music → 3 escalating hop cycles with _jump transitions →
+    music stops → 360° spin finish → triple hop (the grand finale) → speaks.
+
+    Cute factor: the crouch-then-BOING hops look like a excited kid jumping,
+    and the antennas shooting up on each hop are pure joy. This is the
+    high-energy finisher — use it last in the show.
+    """
+    if log:
+        log.event("  [dance] Happy Hop starting!")
+    anim.pause()
+    music_proc = None
+    try:
+        excited_chirp()
+
+        ffmpeg_cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-stream_loop", "-1", "-i", str(_HOP_MUSIC),
+            "-af", "volume=2.0",
+            "-t", str(music_duration), "-f", "alsa", SPEAKER,
+        ]
+        music_proc = subprocess.Popen(ffmpeg_cmd)
+        music_t0 = time.time()
+
+        # ── Entry: two quick hops to get into the beat ─────────
+        _jump(mini)
+        time.sleep(0.1)
+
+        # ── Snap to beat boundary ─────────────────────────────
+        elapsed = time.time() - music_t0
+        beat_offset = math.ceil(elapsed / _HOP_BEAT)
+        wait_snap = music_t0 + beat_offset * _HOP_BEAT - time.time()
+        if wait_snap > 0:
+            time.sleep(wait_snap)
+
+        # ── Beat-synced hop cycles ────────────────────────────
+        beat_count = 0
+        while time.time() - music_t0 < music_duration:
+            cycle = beat_count // len(_HOP_POSES)
+            i = beat_count % len(_HOP_POSES)
+            scale = 1.0 + min(cycle, 2) * 0.20  # 1.0 → 1.2 → 1.4
+
+            target_t = music_t0 + (beat_offset + beat_count) * _HOP_BEAT
+            if target_t > music_t0 + music_duration:
+                break
+
+            _beat(mini, _HOP_POSES[i], scale, target_t)
+            beat_count += 1
+
+            # Jump transition at end of each cycle
+            if i == len(_HOP_POSES) - 1:
+                _jump(mini)
+                if cycle >= 1:
+                    _spin360(mini)
+
+        music_proc.wait()
+        music_proc = None
+
+        # ── Grand finale: 360° spin + triple hop ──────────────
+        _spin360(mini)
+        _jump(mini)
+        time.sleep(0.08)
+        _jump(mini)
+        time.sleep(0.08)
+        _jump(mini)
+        time.sleep(0.15)
+
+        # ── Triumphant pose ───────────────────────────────────
+        mini.goto_target(head=create_head_pose(pitch=0.25, degrees=False),
+                         antennas=[0.90, 0.90], body_yaw=0.0, duration=0.30)
+        time.sleep(0.40)
+
+        # ── Speak the funny line ──────────────────────────────
+        if funny_text:
+            wav = synth_to_file(funny_text)
+            if wav:
+                play_proc = subprocess.Popen(
+                    ["aplay", "-D", SPEAKER, "-q", wav],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                while play_proc.poll() is None:
+                    mini.goto_target(
+                        head=create_head_pose(pitch=0.10, yaw=0.15, degrees=False),
+                        antennas=[0.40, 0.40], body_yaw=0.10, duration=0.25)
+                    time.sleep(0.28)
+                    mini.goto_target(
+                        head=create_head_pose(pitch=0.10, yaw=-0.15, degrees=False),
+                        antennas=[0.40, 0.40], body_yaw=-0.10, duration=0.25)
+                    time.sleep(0.28)
+                play_proc.wait()
+                Path(wav).unlink(missing_ok=True)
+
+    finally:
+        if music_proc is not None:
+            music_proc.kill()
+            music_proc.wait()
+        mini.goto_target(head=create_head_pose(), antennas=[0.0, 0.0],
+                         body_yaw=0.0, duration=0.5)
+        time.sleep(0.6)
+        anim.resume()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Registry: all dances the control panel / LLM can trigger
+# ═══════════════════════════════════════════════════════════════════════════
+
+DANCES = {
+    "macarena": {
+        "func": do_macarena,
+        "label": "Macarena",
+        "music": str(MUSIC_PATH),
+        "bpm": 103.4,
+        "duration": 15.0,
+        "funnies": [
+            "HEY! Who stopped my music?! I was dancing there!",
+            "That was fun! My antennas are still tingling!",
+            "I think I pulled a servo! Just kidding, I'm adorable.",
+        ],
+    },
+    "robot_wave": {
+        "func": do_robot_wave,
+        "label": "Robot Wave",
+        "music": str(_WAVE_MUSIC),
+        "bpm": 123.0,
+        "duration": 12.0,
+        "funnies": [
+            "Was I waving at you or at the wall? I can't tell!",
+            "My antennas are like little hands waving hello!",
+            "Do the robot wave! Come on, wave with me!",
+        ],
+    },
+    "happy_hop": {
+        "func": do_happy_hop,
+        "label": "Happy Hop",
+        "music": str(_HOP_MUSIC),
+        "bpm": 136.0,
+        "duration": 10.0,
+        "funnies": [
+            "BOING BOING BOING! I'm a bouncy robot!",
+            "I can hop even without legs! How cool is that?!",
+            "That was my best hops ever! I'm a jumping bean!",
+        ],
+    },
+}

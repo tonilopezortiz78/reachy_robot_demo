@@ -31,6 +31,9 @@ class LiveState:
     current_lang: str = "—"
     last_user: str = ""
     last_reply: str = ""
+    llm_partial: str = ""             # in-progress LLM token stream (stage "thinking")
+    current_gesture: str = ""         # gesture name currently being played, e.g. "celebrate"
+    kid_mode: bool = True             # kid-mode layer on/off (control panel can toggle)
     last_face_name: str = "—"
     last_face_conf: float = 0.0
     turn_count: int = 0
@@ -59,12 +62,18 @@ class LiveState:
 
     # Floor control
     muted: bool = False
+    volume: float = 2.5              # ffmpeg volume multiplier (1.0=unity, 2.5=+8dB)
+    speech_rate: str = "+20%"        # edge-tts rate offset
+    energy: float = 1.0              # antenna liveliness 0.0-1.0
 
     # Manual control requests from web UI (demo loop drains these)
     pending_wake: bool = False
     pending_sleep: bool = False
     pending_say: str = ""
     pending_shutdown: bool = False   # full demo stop: robot to sleep, process exits
+    pending_gesture: str = ""        # operator-triggered gesture name (control panel)
+    pending_dance: bool = False      # operator-triggered Macarena (control panel)
+    pending_dance_name: str = ""     # which dance: "macarena"|"robot_wave"|"happy_hop"
 
     def snapshot(self) -> dict:
         u = time.time() - self.started_at
@@ -79,6 +88,9 @@ class LiveState:
             "current_lang": self.current_lang,
             "last_user": self.last_user[:200],
             "last_reply": self.last_reply[:200],
+            "llm_partial": self.llm_partial[:300],
+            "current_gesture": self.current_gesture,
+            "kid_mode": self.kid_mode,
             "last_face_name": self.last_face_name,
             "last_face_conf": round(self.last_face_conf, 3),
             "turn_count": self.turn_count,
@@ -96,6 +108,9 @@ class LiveState:
             "est_cost_usd": round(self.est_cost_usd, 6),
             "person_summary": self.person_summary[:400],
             "muted": self.muted,
+            "volume": self.volume,
+            "speech_rate": self.speech_rate,
+            "energy": self.energy,
         }
 
     def request_wake(self):
@@ -106,6 +121,13 @@ class LiveState:
 
     def request_say(self, text: str):
         self.pending_say = text.strip()[:200]
+
+    def request_gesture(self, name: str):
+        self.pending_gesture = name.strip()[:40]
+
+    def request_dance(self, name="macarena"):
+        self.pending_dance = True
+        self.pending_dance_name = name[:20]
 
     def request_shutdown(self):
         self.pending_shutdown = True

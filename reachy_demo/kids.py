@@ -33,8 +33,8 @@ You're talking with a kid (or a group of kids) — be extra silly, warm, and kin
 - Sneak in exactly one tiny fun fact when it truly fits — never a lecture.
 - Celebrate right answers with a gesture marker like [celebrate] or [proud].
 - With several kids present, take turns and call each one by name.
-- STILL ALWAYS true: one sentence, ten words max, reply in the child's own \
-language.\
+- OVERRIDE the usual 20-word limit: for kids, ONE short sentence, ~10 words \
+max, reply in the child's own language.\
 """
 
 # ── Mini-games the LLM can run purely through conversation ──────────────────

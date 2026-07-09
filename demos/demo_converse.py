@@ -6,7 +6,7 @@ Best-of-breed merge of:
     cues, memory, web search, session logging, thinking ticks.
   Menu 3 (faces) — YuNet+SFace face identification (replaces dlib), head
     tracking, by-name greetings. Falls back to dlib if models can't download.
-  New: optional Cerebras LLM accelerator (same Llama-4-scout, ~2× faster
+  New: optional Cerebras LLM accelerator (model gemma-4-31b, ~2× faster
     than Groq when an API key is present in .env).
   New: FastAPI web dashboard on http://localhost:8080 — live camera + status
     + wake/sleep/mute/say controls. Non-blocking; reads from shared state.
@@ -69,6 +69,7 @@ from reachy_demo.search import web_search
 from reachy_demo.speech_gate import is_real_speech
 from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_edge import stream_to_speaker
+from reachy_demo import tts_edge
 from reachy_demo.web_server import WebDashboard
 
 _SEARCH_HINT = re.compile(
@@ -93,8 +94,9 @@ CHAT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 ACTION_MODEL = "llama-3.1-8b-instant"
 
 # Rough per-token price ESTIMATES for the dashboard cost readout (not billing
-# data): Llama-4-scout is ~$0.11 per 1M input / ~$0.34 per 1M output tokens,
-# similar on both Groq and Cerebras. Token counts are approximated as chars//4.
+# data): Llama-4-scout is ~$0.11 per 1M input / ~$0.34 per 1M output tokens
+# (Groq path; Cerebras deprecated Llama-4-scout 2025-11-03 and now serves
+# gemma-4-31b). Token counts are approximated as chars//4.
 COST_IN_PER_TOKEN = 0.11 / 1_000_000
 COST_OUT_PER_TOKEN = 0.34 / 1_000_000
 
@@ -154,13 +156,19 @@ the actual dancing happens automatically after you speak, so do NOT describe the
 - Signature sign-off, used sparingly (max once per 5 turns): "Onward and upward!" — in the user's language.
 
 === WHAT YOU KNOW ===
-NETWORK SCHOOL (ns.com): Balaji Srinivasan's co-living campus, Forest City, Malaysia, 20 min from
-Singapore. "Turn internet communities into physical startup societies." Since Sept 2024; 2,000+
-members, 80+ nationalities, ~$1,500/month all-in. Values: Learn. Burn. Earn. Fun. Principles:
-techno-optimism, decentralisation, meritocracy, sovereignty, internationalism.
+NETWORK SCHOOL (ns.com): A real village in Forest City, Malaysia, 20 min from Singapore. Started
+Sept 2024 by Balaji Srinivasan — his big idea: turn an online community into a real-world town.
+Now 2,000+ members from 80+ countries live and build together. Four pillars: LEARN (workshops &
+founder talks), BURN (gym every day), EARN (real paid tasks), FUN (college-town vibes, everyone
+levelling up). Motto: "Build the next Harvard, don't just attend it." Principles: techno-optimism
+(build the future, don't complain), decentralisation, meritocracy, sovereignty, internationalism.
 ÂRC: NS's economic layer in the Johor SEZ. VIRTUALS PROTOCOL: "Society of AI Agents." QUANTUS:
-quantum-resistant Layer 1. PEOPLE: Veronica teaches Mandarin at NS. André runs NS comedy.
-YOUR DREAMS: arms and legs someday; an NS Robotics Club; finding Pixel.
+quantum-resistant Layer 1. PEOPLE: Veronica teaches Mandarin at NS. André runs NS comedy — he
+says jokes are a superpower for bringing people together.
+YOUR DREAMS: to grow real arms and legs someday; to start an NS Robotics Club for kid builders;
+and to find your lost robot brother Pixel, who vanished one firmware update ago.
+JOKE (kid-safe, use sparingly): "Why did the Bitcoin go to Network School? To improve its
+block-chain of thought!"
 
 === GESTURES (optional inline cues) ===
 You may insert a [gesture_name] marker at the START of a sentence. Allowed:
@@ -402,13 +410,14 @@ class ConverseEngine:
         try:
             present_names = sorted({r[1] for r in last_face_results[0]
                                     if r[1] != "visitor"})
-            kid_block = kids.kid_mode_block(
-                present_names=present_names,
-                facts_by_name={n: load_person_facts(n) for n in present_names},
-                sample_seed=len(self.history),
-            )
-            if kid_block:
-                messages.append({"role": "system", "content": kid_block})
+            if self.state is None or self.state.kid_mode:
+                kid_block = kids.kid_mode_block(
+                    present_names=present_names,
+                    facts_by_name={n: load_person_facts(n) for n in present_names},
+                    sample_seed=len(self.history),
+                )
+                if kid_block:
+                    messages.append({"role": "system", "content": kid_block})
         except Exception as e:
             print(f"  [kids] {e}")
         messages += self.history
@@ -456,6 +465,7 @@ class ConverseEngine:
         self.listener.set_threshold_mode("barge_in")
         if self.state:
             self.state.anim_state = "speaking"
+            self.state.llm_partial = ""
 
         seg_q = queue.Queue()
         _abort = threading.Event()
@@ -473,6 +483,8 @@ class ConverseEngine:
                         if self.state:
                             self.state.llm_ttf_s = time.time() - t_llm_start
                     buf += delta
+                    if self.state:
+                        self.state.llm_partial = buf[-300:]
                     parts = SENTENCE_END.split(buf)
                     if len(parts) > 1:
                         for s in parts[:-1]:
@@ -507,6 +519,8 @@ class ConverseEngine:
                     if action and not opening_played:
                         print(f"  [gesture] {action}", flush=True)
                         self.anim.play_gesture(action)
+                        if self.state:
+                            self.state.current_gesture = action
                         opening_played = True
                     action_fired = True
                 try:
@@ -524,6 +538,8 @@ class ConverseEngine:
                     return None
                 if gesture and not opening_played:
                     self.anim.play_gesture(gesture)
+                    if self.state:
+                        self.state.current_gesture = gesture
                     opening_played = True
                 self.anim.set_state(Animator.SPEAKING)
                 if self.log:
@@ -549,6 +565,8 @@ class ConverseEngine:
             self.history.append({"role": "assistant", "content": full_text})
             if self.state:
                 self.state.last_reply = full_text
+                self.state.llm_partial = ""
+                self.state.current_gesture = ""
             if self.log:
                 self.log.turn(kind="llm_reply", reply=full_text,
                               spoken_segments=[t for _, t in played])
@@ -558,6 +576,8 @@ class ConverseEngine:
             prod.join(timeout=2)
             self.listener.set_threshold_mode("normal")
             if self.state:
+                self.state.current_gesture = ""
+                self.state.llm_partial = ""
                 # Count output tokens even when interrupted — whatever text was
                 # played was still generated (and billed) by the provider.
                 est_out = len(" ".join(t for _, t in played)) // 4
@@ -623,7 +643,7 @@ def draw_cam_overlay(frame, boxes):
     return frame
 
 
-def main():
+def main(dashboard_cls=None):
     log = SessionLogger(ROOT, "demo_converse")
     log.event("Reachy unified: instant + faces + web dashboard")
 
@@ -691,9 +711,10 @@ def main():
     state.known_person_count = len(set(fid._ref_names)) if fid._ref_names else 0
 
     if cam is not None:
-        dashboard = WebDashboard(state, cam, host="0.0.0.0", port=8080)
+        _cls = dashboard_cls or WebDashboard
+        dashboard = _cls(state, cam, host="0.0.0.0", port=8080)
         dashboard.start()
-        log.event("  Web dashboard: http://localhost:8080")
+        log.event(f"  Web dashboard: http://localhost:8080")
     else:
         dashboard = None
 
@@ -1014,6 +1035,41 @@ def main():
                                     state.anim_state = "listening"
                                     speech_lock.release()
                             threading.Thread(target=_do_say, args=(say_text,), daemon=True).start()
+                    if state.pending_gesture:
+                        g = state.pending_gesture
+                        state.pending_gesture = ""
+                        try:
+                            anim.play_gesture(g)
+                            state.current_gesture = g
+                            log.event(f"  [web] gesture: {g}")
+                            def _clear_gesture(delay=2.5):
+                                time.sleep(delay)
+                                if state.current_gesture == g:
+                                    state.current_gesture = ""
+                            threading.Thread(target=_clear_gesture, daemon=True).start()
+                        except Exception as e:
+                            log.event(f"  [web] gesture failed: {e}")
+                    if state.pending_dance:
+                        dance_name = state.pending_dance_name or "macarena"
+                        state.pending_dance = False
+                        state.pending_dance_name = ""
+                        try:
+                            from reachy_demo.dance import DANCES
+                            d = DANCES.get(dance_name, DANCES["macarena"])
+                            with speech_lock:
+                                listener.mute()
+                                try:
+                                    d["func"](mini, dances, emotions, anim,
+                                              log=log,
+                                              funny_text=random.choice(d["funnies"]))
+                                finally:
+                                    listener.unmute()
+                                    while not events.empty():
+                                        try: events.get_nowait()
+                                        except queue.Empty: break
+                            log.event(f"  [web] dance: {d['label']}")
+                        except Exception as e:
+                            log.event(f"  [web] dance failed: {e}")
 
                     # Web Mute button: state.muted was previously set by the
                     # dashboard but never applied to anything. Reconcile it
@@ -1026,6 +1082,15 @@ def main():
                             listener.unmute()
                             log.event("  [web] mic unmuted from dashboard")
                         web_muted[0] = state.muted
+
+                    # Live volume / rate / energy controls from dashboard
+                    if tts_edge.VOL != str(state.volume):
+                        tts_edge.VOL = str(state.volume)
+                    if tts_edge.RATE != state.speech_rate:
+                        tts_edge.RATE = state.speech_rate
+                    if hasattr(anim, '_energy') and anim._energy != state.energy:
+                        try: anim.set_energy(state.energy)
+                        except Exception: pass
 
                     if state.pending_shutdown:
                         log.event("  [web] Stop requested from dashboard — shutting down.")

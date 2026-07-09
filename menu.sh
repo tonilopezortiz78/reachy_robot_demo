@@ -33,10 +33,16 @@ echo "║     Instant talk + face ID + web dashboard          ║"
 echo "║     Camera + status at  http://localhost:8080       ║"
 echo "║     Faces: drop photos in faces/<name>/             ║"
 echo "║                                                      ║"
+echo "║  8) Kids Hackathon  🎉👤🎛️                           ║"
+echo "║     Unified demo + dual-view tabbed dashboard       ║"
+echo "║     /#stage on projector · /#control on laptop      ║"
+echo "║     Puppet panel: gestures, dance, say-anything     ║"
+echo "║     Kid mode on · NS persona · face ID              ║"
+echo "║                                                      ║"
 echo "║  q) Quit                                             ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
-read -p "Pick [1-7/q]: " choice
+read -p "Pick [1-8/q]: " choice
 
 case $choice in
   1) ./run.sh demos/demo_welcome.py ;;
@@ -46,6 +52,7 @@ case $choice in
   5) ./run.sh demos/demo_deepseek.py ;;
   6) ./run.sh demos/demo_instant.py ;;
   7) ./run.sh demos/demo_converse.py ;;
+  8) ./run.sh demos/demo_hackathon.py ;;
   q|Q) echo "Bye!"; exit 0 ;;
-  *) echo "Please pick 1-7 or q."; exit 1 ;;
+  *) echo "Please pick 1-8 or q."; exit 1 ;;
 esac
