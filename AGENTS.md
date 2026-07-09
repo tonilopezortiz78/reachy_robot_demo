@@ -14,7 +14,7 @@ the hardware/SDK story in full; this file adds what it misses.
 
 ```bash
 ./run.sh demos/<file>.py     # run a specific demo (foreground)
-./menu.sh                    # interactive picker (7 demos)
+./menu.sh                    # interactive picker (8 demos)
 ./launch_converse.sh         # headless demo_converse: kills any orphan daemon,
                              # backgrounds the process, logs to
                              # /tmp/reachy_converse.log, prints the PID.
@@ -41,9 +41,11 @@ don't run it while another demo is live.
 | 5 | `demo_deepseek.py` | Like #4 but uses `opencode run` as LLM harness (DeepSeek V4 Flash via opencode). STT still via Groq. ~15 s end-to-end per turn (~8 s LLM-only); thinking ticks cover the gap |
 | 6 | `demo_instant.py` | Streaming TTS — edge-tts audio streamed to the speaker as it's generated, ~0.4s time-to-first-audio |
 | 7 | `demo_converse.py` | Unified: instant talk + face ID + web dashboard |
+| 8 | `demo_hackathon.py` | Kids hackathon: same engine as #7 but with a **dual-view tabbed dashboard** (`/#stage` for projector, `/#control` for operator). Full puppet panel (19 gestures, 3 dances, say-anything, volume/rate/energy sliders, kid-mode toggle). Kid mode on, NS persona |
 
-Not in the menu (superseded by `demo_converse.py`):
-- `demo_dialog.py` — fluid conversation, barge-in, 700 ms turn-take, high-threshold VAD during TTS
+Not in the menu:
+- `demo_two_robots.py` — **two-robot comedy duo** (needs second Reachy + manual dual-daemon launch; see `docs/TWO_ROBOT_PLAN.md`). Robot A talks, Robot B is a mute `ReactorBot` that reacts with comedy gestures
+- `demo_dialog.py` — fluid conversation, barge-in, 700 ms turn-take, high-threshold VAD during TTS (superseded by `demo_converse.py`)
 - `demo_edge.py` — NS ambassador, online edge-tts (`AvaMultilingual` voice, pitch `+16Hz`), any language
 - `demo_talk_ns.py` — NS ambassador, offline Piper voice (needs `GROQ_API_KEY` in `.env`)
 
@@ -71,11 +73,12 @@ Import these — do not reimplement in a demo:
 | `camera.py` | `CameraHub` — shared OpenCV capture thread on `/dev/video2`; `mjpeg_bytes()`, `frame_rgb()`/`frame_bgr()`, `overlay` attribute (assign `hub.overlay = drawer`; **not** a `set_overlay()` method despite the docstring) |
 | `face_id.py` | `FaceIdentifier` — YuNet+SFace face ID (Apache-2.0), falls back to dlib. `identify()`, `add_person()`, **`add_person_targeted(name, frames, target_box)`** (multi-face-safe enrolment — plain `add_person` enrols the *largest* face, wrong when a bystander is bigger), `remove_person()`, `load_roster()`, `init_models()`, `mirror` flag. Used by `demo_converse.py` |
 | `cues.py` | Per-language listening/thinking/"say that again" cues, synthesised once via edge-tts and cached as `cache/cue_<lang>_<kind>.wav` |
-| `dance.py` | `do_macarena(mini, …)` — beat-synced Macarena at 103.4 BPM to `music/macarena.mp3`; `DANCE_KEYWORDS` multilingual trigger set. Backs `demo_dance.py` |
+| `dance.py` | `do_macarena(mini, …)` — beat-synced Macarena at 103.4 BPM to `music/macarena.mp3`; `do_robot_wave(…)` — bouncy antenna-wave dance at 123 BPM to `blipotron.mp3`; `do_happy_hop(…)` — energetic hop+spin at 136 BPM to `kick_shock.mp3`; `DANCES` registry dict; `DANCE_KEYWORDS` multilingual trigger set. Backs `demo_dance.py` + the hackathon dance picker |
 | `kids.py` | Kid-mode content pack (`KID_MODE_RULES`, `kid_mode_block`, `reward_line`) layered onto the base system prompt; uses `animator.NAMED_GESTURES` |
 | `memory.py` | Long-term memory persisted at `memory/reachy_memory.json`. `load_memories()`, `memory_block()`, `extract_memories()`, `remember()`, `known_people()`, `load_person_facts(name)` (per-person facts under `cache/people/`). Imported by demos 4/5/6/7 |
-| `live_state.py` | `LiveState` — thread-safe bridge between demo loop and web dashboard. `snapshot()`, `request_wake()`, `request_sleep()`, `request_say()`, **`request_shutdown()`** (backs the dashboard Stop button) |
-| `web_server.py` | `WebDashboard` — FastAPI on :8080; MJPEG `/video`, `/status` JSON, WebSocket `/ws`, `/api/wake\|sleep\|say\|stop\|mute`, `GET /api/people` (roster from `memory.py`). Auto-reconnect frontend |
+| `live_state.py` | `LiveState` — thread-safe bridge between demo loop and web dashboard. `snapshot()`, `request_wake()`, `request_sleep()`, `request_say()`, **`request_shutdown()`** (backs the dashboard Stop button), `request_gesture(name)`, `request_dance(name)`. Fields include `llm_partial` (live LLM stream), `current_gesture`, `kid_mode`, `volume`, `speech_rate`, `energy` — all settable from the control panel |
+| `web_server.py` | `WebDashboard` — FastAPI on :8080; MJPEG `/video`, `/status` JSON, WebSocket `/ws`, `/api/wake\|sleep\|say\|stop\|mute`, `GET /api/people` (roster from `memory.py`). Auto-reconnect frontend. Used by `demo_converse.py` |
+| `web_stage.py` | `WebStage` — dual-view **tabbed** dashboard for `demo_hackathon.py`. One page, two tabs: `/#stage` (projector: camera + hears/thinks/says captions + state-colored background) and `/#control` (operator: wake/sleep/stop, say-anything, 19 gesture buttons, 3 dance buttons, kid-mode/mute toggles, volume/rate/energy sliders, latency/cost, people roster). WebSocket `/ws` + `/api/gesture\|dance\|kid\|volume\|rate\|energy\|dances` endpoints |
 | `session_log.py` | `SessionLogger(ROOT, "demo")` — writes one numbered folder per run under `logs/<N>/` (`console.log`, `transcript.jsonl`, turn WAVs). Closest thing to reproducible debugging |
 | `recorder.py` | `DiagnosticRecorder` — rolling black-box recorder (events.log + video/audio clips) capped at ~100 MB under `<base_dir>/diag/` |
 | `search.py` | `web_search(query) → str`, `clean_query(text)` — DuckDuckGo helper, run in parallel with TTS |

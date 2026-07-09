@@ -76,31 +76,36 @@ html,body{height:100%;background:#0a0a0a;color:#fff;font-family:'Segoe UI',syste
 .view.active{display:block}
 
 /* ════════════════════════════════════════════════════════════════
-   STAGE VIEW (projector)
+   STAGE VIEW (projector) — terminal-style live console
    ════════════════════════════════════════════════════════════════ */
 #stage-view{display:none}
-#stage-view.active{display:grid;grid-template-columns:1.4fr 1fr;grid-template-rows:1fr auto;gap:12px;padding:60px 12px 12px;transition:background-color .6s ease}
+#stage-view.active{display:grid;grid-template-columns:1.5fr 1fr;grid-template-rows:1fr auto;gap:10px;padding:54px 10px 10px;transition:background-color .6s ease}
 #stage-view.speaking{background:#0c1a2e}
 #stage-view.listening{background:#0a1f0e}
 #stage-view.thinking{background:#1f1408}
 #stage-view.idle{background:#0a0a0a}
-#cam-stage{grid-row:1/3;position:relative;background:#000;border-radius:16px;overflow:hidden;border:3px solid #1f2937}
+#cam-stage{grid-row:1/3;position:relative;background:#000;border-radius:12px;overflow:hidden;border:2px solid #1f2937}
 #cam-stage img{width:100%;height:100%;object-fit:cover}
-#state-badge{position:absolute;top:14px;left:14px;padding:8px 22px;border-radius:999px;font-size:1.3rem;font-weight:800;letter-spacing:2px;backdrop-filter:blur(4px)}
-#gesture-emoji{position:absolute;top:14px;right:14px;font-size:2.6rem;font-weight:800;text-shadow:0 0 18px rgba(0,0,0,.9);color:#fbbf24}
-#face-chip{position:absolute;bottom:14px;left:14px;padding:8px 18px;border-radius:999px;background:rgba(0,0,0,.6);font-size:1.2rem;font-weight:700;backdrop-filter:blur(4px);display:none}
-#stage-right{display:flex;flex-direction:column;gap:12px;min-width:0}
-.panel{background:#111827;border-radius:16px;padding:18px 22px;border:2px solid #1f2937;display:flex;flex-direction:column;min-height:0}
-.panel h2{font-size:.9rem;text-transform:uppercase;letter-spacing:2px;color:#6b7280;margin-bottom:10px;flex-shrink:0}
-#hears{flex:0 0 auto}#hears .txt{font-size:1.5rem;line-height:1.3;color:#e5e7eb;min-height:2.6em}
-#thinks{flex:1}#thinks .txt{font-size:1.25rem;line-height:1.35;color:#fbbf24;font-style:italic;min-height:3em;overflow:hidden}
-#says{flex:1.4}#says .txt{font-size:2rem;line-height:1.25;font-weight:700;color:#fff;min-height:2em;display:flex;align-items:center}
-.blink{display:inline-block;width:4px;height:2.4rem;background:#3b82f6;margin-left:6px;animation:bk 1s steps(2) infinite}
+#tracker-bar{position:absolute;bottom:0;left:0;right:0;display:flex;gap:6px;padding:8px;background:rgba(0,0,0,.75);overflow-x:auto;min-height:42px;align-items:center}
+.face-tag{display:flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;font-size:1rem;font-weight:700;white-space:nowrap;flex-shrink:0;backdrop-filter:blur(4px)}
+.face-tag.known{background:rgba(34,197,94,.25);border:1px solid rgba(34,197,94,.5);color:#bbf7d0}
+.face-tag.visitor{background:rgba(59,130,246,.25);border:1px solid rgba(59,130,246,.5);color:#bfdbfe}
+.face-tag .conf{font-size:.7rem;opacity:.7;font-weight:400}
+#state-badge{position:absolute;top:12px;left:12px;padding:6px 16px;border-radius:999px;font-size:1.1rem;font-weight:800;letter-spacing:2px;backdrop-filter:blur(4px);background:rgba(0,0,0,.5)}
+#gesture-emoji{position:absolute;top:12px;right:12px;font-size:2rem;font-weight:800;text-shadow:0 0 14px rgba(0,0,0,.9);color:#fbbf24}
+/* right: terminal console */
+#con{display:flex;flex-direction:column;gap:6px;overflow:hidden}
+#con-log{flex:1;overflow-y:auto;font-family:'SF Mono','Cascadia Code','Consolas',monospace;font-size:1.1rem;line-height:1.5;padding:8px 12px;background:#0c0c0c;border-radius:10px;border:2px solid #1f2937;min-height:0}
+.log-line{padding:3px 0;border-bottom:1px solid #1a1a1a;animation:fk .3s}
+@keyframes fk{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.log-line .time{color:#374151;margin-right:8px;font-size:.7rem}
+.log-line .glyph{font-size:1.1rem;margin-right:6px}
+.log-line.listening{color:#86efac}.log-line.heard{color:#93c5fd}.log-line.thinking{color:#fde68a}.log-line.speaking{color:#93c5fd;font-weight:700}.log-line.gesture{color:#fbbf24}.log-line.done{color:#64748b}
+#con-current{flex-shrink:0;padding:10px 14px;background:#111827;border-radius:10px;border:2px solid #1f2937;font-size:1.4rem;font-weight:700;min-height:2.8em;display:flex;align-items:center;gap:10px}
+#con-current .glyph{font-size:1.6rem}
+#con-current .blink{display:inline-block;width:4px;height:1.8rem;background:currentColor;margin-left:4px;animation:bk 1s steps(2) infinite}
 @keyframes bk{50%{opacity:0}}
-.dim{opacity:.35}
-.pulse{animation:pl 1.2s ease-in-out infinite}
-@keyframes pl{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
-#stage-footer{grid-column:2;font-size:.8rem;color:#374151;text-align:right;padding:0 4px}
+#stage-footer{grid-column:2;font-size:.7rem;color:#374151;text-align:right}
 
 /* ════════════════════════════════════════════════════════════════
    CONTROL VIEW (operator laptop)
@@ -149,14 +154,13 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
     <img id="feed-stage" src="/video" alt="camera" onerror="reconnect('feed-stage')">
     <div id="state-badge">IDLE</div>
     <div id="gesture-emoji"></div>
-    <div id="face-chip"></div>
+    <div id="tracker-bar"><span style="color:#64748b;font-size:.85rem">no faces</span></div>
   </div>
-  <div id="stage-right">
-    <div id="hears" class="panel"><h2>Reachy hears</h2><div class="txt dim" id="hears-txt">...</div></div>
-    <div id="thinks" class="panel"><h2>Reachy thinks</h2><div class="txt dim" id="thinks-txt">...</div></div>
-    <div id="says" class="panel"><h2>Reachy says</h2><div class="txt" id="says-txt"><span class="dim">...</span></div></div>
+  <div id="con">
+    <div id="con-log"></div>
+    <div id="con-current"><span style="color:#64748b">...</span></div>
   </div>
-  <div id="stage-footer">Network School - Reachy Mini - <span id="s-lang-stage">-</span></div>
+  <div id="stage-footer">NS Reachy Mini · <span id="s-lang-stage">-</span> · <span id="s-face-count">0</span> faces</div>
 </div>
 
 <!-- ═══ CONTROL VIEW ═══ -->
@@ -269,31 +273,68 @@ function connect(){
 connect();
 
 /* ── render ── */
-function esc(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+let lastAnim='idle',lastUser='',lastGesture='',lastPartial='',lastSpeech='',lastFaceName='-',lastFaces=0;
+function esc(t){return String(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmt(s){if(!s||s<0)return'-';return s.toFixed(2)+'s';}
+function now(){const d=new Date();return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')+':'+d.getSeconds().toString().padStart(2,'0');}
+function logLine(cls,glyph,text){const l=document.createElement('div');l.className='log-line '+cls;l.innerHTML='<span class="time">'+now()+'</span><span class="glyph">'+glyph+'</span>'+esc(text);const con=$('con-log');con.appendChild(l);con.scrollTop=con.scrollHeight;if(con.children.length>80)con.firstChild.remove();}
 function render(s){
   const st=s.anim_state||'idle';
-  // stage background color
   const sv=$('stage-view');
   sv.className='view'+(sv.classList.contains('active')?' active':'')+' '+st;
-  // stage
+  // state badge
   const badge=$('state-badge');
   badge.textContent=STATE_L[st]||st.toUpperCase();
   badge.style.background=STATE_C[st]||'#4b5563';
   badge.className=(st==='speaking'||st==='listening')?'pulse':'';
-  $('gesture-emoji').textContent=G_E[s.current_gesture||'']||'';
-  const fc=$('face-chip');
-  if(s.last_face_name&&s.last_face_name!=='-'&&s.last_face_conf>0.45){fc.style.display='block';fc.textContent='Hi '+s.last_face_name;}
-  else{fc.style.display='none';}
-  $('hears-txt').textContent=s.last_user||'...';
-  $('hears-txt').className='txt'+(s.last_user?'':' dim');
+  // gesture emoji
+  const g=s.current_gesture||'';
+  $('gesture-emoji').textContent=G_E[g]||'';
+  // state transition log
+  if(st!==lastAnim){
+    const em={idle:'Zz',listening:'mic',thinking:'brain',speaking:'spk'};
+    logLine(st,em[st]||'.',STATE_L[st]||st);
+    lastAnim=st;
+  }
+  // user speech log
+  if(s.last_user&&s.last_user!==lastUser){
+    logLine('heard','ear',s.last_user);
+    lastUser=s.last_user;
+  }
+  // current caption: speech > thinking > listening
+  const speech=s.current_speech||'';
   const partial=s.llm_partial||'';
-  $('thinks-txt').textContent=partial?('"'+partial+'"'):'...';
-  $('thinks-txt').className='txt'+(partial?'':' dim');
-  const reply=s.last_reply||'';
-  $('says-txt').innerHTML=reply?(esc(reply)+(st==='speaking'?'<span class="blink"></span>':'')):'<span class="dim">...</span>';
+  const cur=$('con-current');
+  if(speech&&speech!==lastSpeech){
+    cur.innerHTML='<span style="color:#93c5fd;font-size:1.5rem">speak</span>'+esc(speech)+'<span class="blink" style="background:#93c5fd"></span>';
+    lastSpeech=speech;
+  }else if(!speech&&st==='thinking'&&partial&&partial!==lastPartial){
+    cur.innerHTML='<span style="color:#fde68a;font-size:1.5rem">think</span><span style="color:#fbbf24;font-style:italic">\u201c'+esc(partial.slice(-80))+'\u201d</span>';
+    lastPartial=partial;
+  }else if(!speech&&st==='listening'){
+    cur.innerHTML='<span style="color:#86efac;font-size:1.5rem">listen</span><span style="color:#86efac">Waiting for you...</span>';
+    lastSpeech='';lastPartial='';
+  }else if(!st||st==='idle'){
+    cur.innerHTML='<span style="color:#64748b;font-size:1.5rem">Zz</span><span style="color:#64748b">Ready.</span>';
+    lastSpeech='';lastPartial='';
+  }
+  // face tracker bar
+  const fc=s.faces_visible||0;
+  $('s-face-count').textContent=fc;
+  if(fc>0&&(fc!==lastFaces||s.last_face_name!==lastFaceName)){
+    const bar=$('tracker-bar');
+    let html='';
+    if(s.last_face_name&&s.last_face_name!=='-'&&s.last_face_conf>0.45){
+      html+='<div class="face-tag known">'+esc(s.last_face_name)+'<span class="conf">'+Math.round(s.last_face_conf*100)+'%</span></div>';
+    }
+    if(fc>1){html+='<div class="face-tag visitor">+'+String(fc-1)+' more</div>';}
+    else if(!html&&fc>0){html+='<div class="face-tag visitor">'+fc+' face(s)</div>';}
+    bar.innerHTML=html||'<span style="color:#64748b;font-size:.85rem">tracking...</span>';
+    lastFaces=fc;lastFaceName=s.last_face_name||'-';
+  }
+  // lang + faces footer
   $('s-lang-stage').textContent=s.current_lang||'-';
-  // control
+  // === control panel fields ===
   $('s-robot').textContent=s.robot_online?'online':'offline';
   $('s-robot').style.color=s.robot_online?'#bbf7d0':'#fca5a5';
   $('s-state').textContent=s.anim_state;

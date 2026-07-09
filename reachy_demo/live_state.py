@@ -31,6 +31,7 @@ class LiveState:
     current_lang: str = "—"
     last_user: str = ""
     last_reply: str = ""
+    current_speech: str = ""          # sentence currently being streamed to TTS (stage caption)
     llm_partial: str = ""             # in-progress LLM token stream (stage "thinking")
     current_gesture: str = ""         # gesture name currently being played, e.g. "celebrate"
     kid_mode: bool = True             # kid-mode layer on/off (control panel can toggle)
@@ -88,6 +89,7 @@ class LiveState:
             "current_lang": self.current_lang,
             "last_user": self.last_user[:200],
             "last_reply": self.last_reply[:200],
+            "current_speech": self.current_speech[:300],
             "llm_partial": self.llm_partial[:300],
             "current_gesture": self.current_gesture,
             "kid_mode": self.kid_mode,

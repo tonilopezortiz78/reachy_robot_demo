@@ -545,6 +545,8 @@ class ConverseEngine:
                 if self.log:
                     self.log.event(f"  [stream {len(played)+1}] ▶ \"{text}\"")
                 t_tts = time.time()
+                if self.state:
+                    self.state.current_speech = text
                 ok = stream_to_speaker(text, stop_check=self._barge_in_detected)
                 if first and self.state:
                     self.state.tts_tta_s = time.time() - t_tts
@@ -578,6 +580,7 @@ class ConverseEngine:
             if self.state:
                 self.state.current_gesture = ""
                 self.state.llm_partial = ""
+                self.state.current_speech = ""
                 # Count output tokens even when interrupted — whatever text was
                 # played was still generated (and billed) by the provider.
                 est_out = len(" ".join(t for _, t in played)) // 4
