@@ -321,6 +321,8 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
       <div class="stat"><span class="k">STT</span><span class="v" id="t-stt">-</span></div>
       <div class="stat"><span class="k">LLM TTF</span><span class="v" id="t-ttf">-</span></div>
       <div class="stat"><span class="k">TTS TTA</span><span class="v" id="t-tta">-</span></div>
+      <div class="stat"><span class="k">Reply wait</span><span class="v" id="t-wait">-</span></div>
+      <div class="stat"><span class="k">Talk time</span><span class="v" id="t-talk">-</span></div>
     </div>
   </div>
 </div>
@@ -543,6 +545,8 @@ function R(s){
   $('t-stt').textContent=(s.stt_s>0?s.stt_s.toFixed(2)+'s':'-');
   $('t-ttf').textContent=(s.llm_ttf_s>0?s.llm_ttf_s.toFixed(2)+'s':'-');
   $('t-tta').textContent=(s.tts_tta_s>0?s.tts_tta_s.toFixed(2)+'s':'-');
+  $('t-wait').textContent=(s.reply_wait_s>0?s.reply_wait_s.toFixed(2)+'s':'-');
+  $('t-talk').textContent=(s.talk_s>0?s.talk_s.toFixed(2)+'s':'-');
 }
 function gateRow(vId,cId,measured,floor){
   const m=typeof measured==='number'?measured:0, f=typeof floor==='number'?floor:0;

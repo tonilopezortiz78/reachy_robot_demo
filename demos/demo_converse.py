@@ -534,6 +534,7 @@ class ConverseEngine:
             self.state.anim_state = "thinking"
             self.state.llm_partial = ""
             self.state.current_speech = ""
+            self.state.first_audio_at = 0.0   # reset; set on this turn's first audio
 
         seg_q = queue.Queue()
         _abort = threading.Event()
@@ -617,9 +618,14 @@ class ConverseEngine:
                     self.state.current_speech = text
                 # Flip the dashboard to SPEAKING on the LITERAL first audio sample
                 # (not when synthesis merely starts ~0.4s earlier), so the pipeline's
-                # thinking→speaking transition lines up with real sound.
-                _first_audio = (lambda: setattr(self.state, "anim_state", "speaking")) \
-                    if self.state else None
+                # thinking→speaking transition lines up with real sound. Also stamp
+                # the first-audio wall-clock (once per turn) for the timing record.
+                def _first_audio():
+                    self.state.anim_state = "speaking"
+                    if not self.state.first_audio_at:
+                        self.state.first_audio_at = time.time()
+                if not self.state:
+                    _first_audio = None
                 ok = stream_to_speaker(text, stop_check=self._barge_in_detected,
                                        on_first_audio=_first_audio)
                 if first and self.state:
@@ -1333,6 +1339,7 @@ def main(dashboard_cls=None):
                         else:
                             speaker_track_id[0] = None
                         utt_s = len(pcm) / 2 / MIC_RATE
+                        t_turn = time.time()   # turn clock: user finished → we start
                         log.event(f"  [heard] utterance {utt_s:.1f}s → transcribing")
                         anim.set_state(Animator.THINKING)
                         state.anim_state = "thinking"
@@ -1657,6 +1664,35 @@ def main(dashboard_cls=None):
                         total_dt = time.time() - t1
                         state.total_s = total_dt
                         state.turn_count += 1
+
+                        # ── Per-turn timing record ────────────────────────────
+                        # One consolidated line + structured transcript entry so
+                        # latency can be analysed live and after the fact. Stages:
+                        #  vad   fixed end-of-utterance hangover (SILENCE_MS + tail)
+                        #  stt   transcription   think LLM time-to-first-token
+                        #  tts   TTS time-to-first-audio
+                        #  wait  user-stops → Reachy's first audio (perceived silence)
+                        #  talk  Reachy's speaking duration    turn  full turn
+                        now = time.time()
+                        vad_fixed = listener_mod.SILENCE_MS / 1000.0 + listener_mod.TAIL_FRAMES * 0.032
+                        fa = state.first_audio_at
+                        wait = (fa - t_turn) if fa else 0.0
+                        talk = (now - fa) if fa else 0.0
+                        state.reply_wait_s = wait
+                        state.talk_s = talk
+                        turn_total = now - t_turn
+                        log.event(
+                            f"  ⏱ turn {state.turn_count} | vad~{vad_fixed:.2f} · "
+                            f"stt {state.stt_s:.2f} · think {state.llm_ttf_s:.2f} · "
+                            f"tts {state.tts_tta_s:.2f} · wait {wait:.2f} · "
+                            f"talk {talk:.2f} · turn {turn_total:.2f}s")
+                        log.turn(kind="timing", turn=state.turn_count,
+                                 vad_fixed=round(vad_fixed, 3), stt=round(state.stt_s, 3),
+                                 think=round(state.llm_ttf_s, 3), tts=round(state.tts_tta_s, 3),
+                                 reply_wait=round(wait, 3), talk=round(talk, 3),
+                                 turn_total=round(turn_total, 3),
+                                 lang=final_lang, interrupted=(reply is None))
+
                         if reply is None:
                             log.event(f"  -- interrupted after {total_dt:.2f}s --")
                         else:

@@ -46,6 +46,9 @@ class LiveState:
     llm_ttf_s: float = 0.0
     tts_tta_s: float = 0.0
     total_s: float = 0.0
+    reply_wait_s: float = 0.0        # user stops → Reachy's first audio (the perceived silence)
+    talk_s: float = 0.0              # how long Reachy spent speaking the reply
+    first_audio_at: float = 0.0      # internal: wall-clock of this turn's first audio sample
 
     # Faces
     faces_visible: int = 0
@@ -127,6 +130,8 @@ class LiveState:
             "llm_ttf_s": round(self.llm_ttf_s, 3),
             "tts_tta_s": round(self.tts_tta_s, 3),
             "total_s": round(self.total_s, 3),
+            "reply_wait_s": round(self.reply_wait_s, 3),
+            "talk_s": round(self.talk_s, 3),
             "faces_visible": self.faces_visible,
             "known_person_count": self.known_person_count,
             "llm_provider": self.llm_provider,
