@@ -464,9 +464,12 @@ class ConverseEngine:
                 if self.state:
                     self.state.llm_provider = "cerebras"
             except Exception as e:
-                print(f"  [cerebras] failed → groq fallback: {e}")
+                # Fall back to Groq for THIS turn only. A Cerebras 429
+                # ("high traffic") is transient — permanently flipping
+                # _use_cerebras off made one blip disable the fast path for the
+                # whole session. Leave it on so the next turn retries Cerebras.
+                print(f"  [cerebras] failed → groq fallback (this turn): {e}")
                 stream = self._groq_stream(messages)
-                self._use_cerebras = False
                 if self.state:
                     self.state.llm_provider = "groq"
                     self.state.llm_model = CHAT_MODEL
@@ -600,10 +603,19 @@ class ConverseEngine:
                 self.state.est_cost_usd += est_out * COST_OUT_PER_TOKEN
 
     def _groq_stream(self, messages):
-        return self.client.chat.completions.create(
+        # Yield text deltas (strings), NOT raw ChatCompletionChunk objects —
+        # the consumer does `buf += delta`. Returning the raw stream made every
+        # reply crash with "can only concatenate str (not ChatCompletionChunk)"
+        # and go silent whenever the Cerebras path fell back to Groq (e.g. a
+        # Cerebras 429). Mirror cerebras_client.stream_chat's unwrapping.
+        stream = self.client.chat.completions.create(
             model=CHAT_MODEL, messages=messages,
             max_tokens=88, temperature=0.80, stream=True,
         )
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            yield chunk.choices[0].delta.content or ""
 
     def speak_greeting(self, text):
         self.listener.set_threshold_mode("barge_in")
