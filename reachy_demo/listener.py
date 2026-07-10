@@ -46,9 +46,14 @@ _LOUD_ROOM = os.environ.get("REACHY_LOUD_ROOM", "").lower() in ("1", "true", "ye
 
 THRESH_NORMAL   = 0.60 if _LOUD_ROOM else 0.45   # standard — when robot is silent
 THRESH_BARGE_IN = 0.75   # high — when robot is speaking, only real speech counts
-SILENCE_MS      = 700    # silence before an utterance is considered ended
+# End-of-utterance wait: was 700 ms + 10 tail frames (~1.0 s of dead air BEFORE
+# STT even starts, EVERY turn — the biggest felt latency). Trimmed to cut ~0.4 s
+# off every turn. SILENCE_MS is the speed↔pause-tolerance knob: lower = snappier
+# but may clip a speaker who pauses mid-sentence to find a word (matters for the
+# multilingual visitors). Tune live at the event: REACHY_SILENCE_MS=600 ./run.sh …
+SILENCE_MS      = int(os.environ.get("REACHY_SILENCE_MS", "500"))
 MIN_SPEECH_S    = 0.30   # shorter than this is dropped (cough / click)
-TAIL_FRAMES     = 10     # extra frames kept after end so words aren't clipped
+TAIL_FRAMES     = 4      # extra frames of already-confirmed silence kept after end
 BARGE_IN_FRAMES = 6      # ~200 ms of sustained high-threshold speech to barge in
 MAX_RECOVER     = 5      # consecutive failed reopens before a hard mic_error
 

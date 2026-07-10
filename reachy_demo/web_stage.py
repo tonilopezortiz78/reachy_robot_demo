@@ -7,14 +7,26 @@ import json
 import re
 import threading
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from starlette.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from starlette.responses import FileResponse, HTMLResponse, StreamingResponse
 
 if TYPE_CHECKING:
     from reachy_demo.camera import CameraHub
+    from reachy_demo.face_id import FaceIdentifier
     from reachy_demo.live_state import LiveState
+
+_DEFAULT_FACES_DIR = Path(__file__).parent.parent / "faces"
+
+
+def _face_slug(name: str) -> str:
+    """Match FaceIdentifier's on-disk folder naming, then strip anything unsafe
+    for a single path segment. The resolve()+prefix check in /api/face is the
+    real traversal guard; this is defense in depth."""
+    slug = name.strip().lower().replace(" ", "_")
+    return re.sub(r"[^a-z0-9_\-]", "", slug)
 
 GESTURES = [
     "acknowledge", "yes", "no", "thank", "thinking", "curious", "confused",
@@ -129,9 +141,15 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
 .toggle .sw{width:38px;height:22px;background:#334155;border-radius:999px;position:relative;transition:.2s}
 .toggle .sw::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:.2s}
 .toggle.on .sw{background:#22c55e}.toggle.on .sw::after{left:18px}
-.people{max-height:180px;overflow:auto}
-.person{padding:6px 8px;border-bottom:1px solid #334155}
-.person .n{font-weight:700;color:#fff}.person .f{font-size:.75rem;color:#94a3b8}
+.people{max-height:320px;overflow:auto}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px}
+.pcard{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:8px;text-align:center}
+.pcard img,.pcard .noimg{width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;background:#1e293b;display:flex;align-items:center;justify-content:center;font-size:1.8rem;margin-bottom:6px}
+.pcard .n{font-weight:700;color:#fff;font-size:.8rem;word-break:break-word;margin-bottom:4px}
+.pcard .f{font-size:.68rem;color:#94a3b8;margin-bottom:6px}
+.pcard .actions{display:flex;gap:4px;justify-content:center}
+.pcard .actions button{flex:1;border:1px solid #475569;background:#1e293b;color:#e5e7eb;border-radius:5px;padding:4px 2px;font-size:.85rem;cursor:pointer}
+.pcard .actions button:hover{background:#334155}
 .cam-prev{width:100%;border-radius:8px;border:1px solid #334155;margin-bottom:8px}
 
 /* ═══ TECH (sound-check audit) ═══ */
@@ -241,23 +259,7 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
       <div class="stat"><span class="k">Energy</span><span class="v" id="s-ene">1.0</span></div>
       <input type="range" id="ene-sl" min="0" max="1" step=".1" value="1" style="width:100%">
     </div>
-    <div class="cd">
-      <h2>Audio tuning (sound-check)</h2>
-      <div style="font-size:.72rem;color:#94a3b8;margin-bottom:8px">Higher = ignore background chatter (do a 30s sound-check)</div>
-      <div class="stat"><span class="k">Noise floor</span><span class="v" id="s-rms">120</span></div>
-      <input type="range" id="rms-sl" min="0" max="2000" step="10" value="120" style="width:100%;margin-bottom:8px" oninput="dA('rms',this.value)">
-      <div class="stat"><span class="k">Voiced ratio</span><span class="v" id="s-voi">.30</span></div>
-      <input type="range" id="voi-sl" min="0" max="1" step=".01" value=".30" style="width:100%;margin-bottom:8px" oninput="dA('voi',this.value)">
-      <div class="stat"><span class="k">Voice peak</span><span class="v" id="s-pk">.75</span></div>
-      <input type="range" id="pk-sl" min="0" max="1" step=".01" value=".75" style="width:100%;margin-bottom:8px" oninput="dA('pk',this.value)">
-      <div class="stat"><span class="k">Min duration</span><span class="v" id="s-dur">.30</span></div>
-      <input type="range" id="dur-sl" min="0" max="1.5" step=".05" value=".30" style="width:100%;margin-bottom:8px" oninput="dA('dur',this.value)">
-      <div class="stat"><span class="k">Mic trigger</span><span class="v" id="s-vad">.45</span></div>
-      <input type="range" id="vad-sl" min="0.1" max="0.95" step=".01" value=".45" style="width:100%;margin-bottom:8px" oninput="dA('vad',this.value)">
-      <div class="stat"><span class="k">Barge-in</span><span class="v" id="s-brg">.75</span></div>
-      <input type="range" id="brg-sl" min="0.1" max="0.95" step=".01" value=".75" style="width:100%" oninput="dA('brg',this.value)">
-    </div>
-    <div class="cd">
+    <div class="cd" style="grid-column:1/-1">
       <h2>Enrolled people</h2>
       <div class="people" id="ppl">loading...</div>
     </div>
@@ -287,6 +289,22 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
     </div>
   </div>
   <div class="ctrl-grid">
+    <div class="cd">
+      <h2>Mic tuning (sound-check)</h2>
+      <div style="font-size:.72rem;color:#94a3b8;margin-bottom:8px">Higher = ignore background chatter (do a 30s sound-check)</div>
+      <div class="stat"><span class="k">Noise floor</span><span class="v" id="s-rms">120</span></div>
+      <input type="range" id="rms-sl" min="0" max="2000" step="10" value="120" style="width:100%;margin-bottom:8px" oninput="dA('rms',this.value)">
+      <div class="stat"><span class="k">Voiced ratio</span><span class="v" id="s-voi">.30</span></div>
+      <input type="range" id="voi-sl" min="0" max="1" step=".01" value=".30" style="width:100%;margin-bottom:8px" oninput="dA('voi',this.value)">
+      <div class="stat"><span class="k">Voice peak</span><span class="v" id="s-pk">.75</span></div>
+      <input type="range" id="pk-sl" min="0" max="1" step=".01" value=".75" style="width:100%;margin-bottom:8px" oninput="dA('pk',this.value)">
+      <div class="stat"><span class="k">Min duration</span><span class="v" id="s-dur">.30</span></div>
+      <input type="range" id="dur-sl" min="0" max="1.5" step=".05" value=".30" style="width:100%;margin-bottom:8px" oninput="dA('dur',this.value)">
+      <div class="stat"><span class="k">Mic trigger</span><span class="v" id="s-vad">.45</span></div>
+      <input type="range" id="vad-sl" min="0.1" max="0.95" step=".01" value=".45" style="width:100%;margin-bottom:8px" oninput="dA('vad',this.value)">
+      <div class="stat"><span class="k">Barge-in</span><span class="v" id="s-brg">.75</span></div>
+      <input type="range" id="brg-sl" min="0.1" max="0.95" step=".01" value=".75" style="width:100%" oninput="dA('brg',this.value)">
+    </div>
     <div class="cd">
       <h2>Last gate decision</h2>
       <div id="gate-headline" style="font-weight:800;font-size:1rem;margin-bottom:8px">-</div>
@@ -579,10 +597,51 @@ function H(){
   fetch('/api/people').then(r=>r.json()).then(d=>{
     const p=$('ppl');
     if(!d.people||!d.people.length){p.innerHTML='<div style="color:#64748b">none enrolled</div>';return;}
-    p.innerHTML=d.people.map(x=>'<div class="person"><div class="n">'+esc(x.name)+'</div><div class="f">'+(x.facts&&x.facts.length?x.facts.length+' fact(s)':'no facts')+'</div></div>').join('');
+    const grid=document.createElement('div');grid.className='pgrid';
+    d.people.forEach(x=>{
+      const card=document.createElement('div');card.className='pcard';
+      const img=document.createElement('img');
+      img.src='/api/face/'+encodeURIComponent(x.name)+'?t='+Date.now();
+      img.alt='';
+      img.onerror=()=>{const ni=document.createElement('div');ni.className='noimg';ni.textContent='🙂';img.replaceWith(ni);};
+      const n=document.createElement('div');n.className='n';n.textContent=x.name;
+      const f=document.createElement('div');f.className='f';
+      f.textContent=(x.facts&&x.facts.length)?x.facts.length+' fact(s)':'no facts';
+      const acts=document.createElement('div');acts.className='actions';
+      const bf=document.createElement('button');bf.textContent='📝';bf.title='Edit facts';
+      bf.onclick=()=>editFacts(x.name,x.facts||[]);
+      const be=document.createElement('button');be.textContent='✏️';be.title='Rename';
+      be.onclick=()=>renamePerson(x.name);
+      const bd=document.createElement('button');bd.textContent='🗑️';bd.title='Delete';
+      bd.onclick=()=>deletePerson(x.name);
+      acts.appendChild(bf);acts.appendChild(be);acts.appendChild(bd);
+      card.appendChild(img);card.appendChild(n);card.appendChild(f);card.appendChild(acts);
+      grid.appendChild(card);
+    });
+    p.innerHTML='';p.appendChild(grid);
   }).catch(()=>{});
 }
 H();
+
+function renamePerson(name){
+  const next=prompt('Rename "'+name+'" to:',name);
+  if(!next||!next.trim()||next.trim()===name)return;
+  P('/api/person/rename',{old:name,new:next.trim()});
+  setTimeout(H,400);
+}
+function deletePerson(name){
+  if(!confirm('Delete "'+name+'"? This removes their photos and face data.'))return;
+  P('/api/person/delete',{name:name});
+  setTimeout(H,400);
+}
+function editFacts(name,facts){
+  const cur=(facts||[]).join('\n');
+  const next=prompt('Facts about "'+name+'" (one per line):',cur);
+  if(next===null)return;               // cancelled
+  const list=next.split('\n').map(s=>s.trim()).filter(Boolean);
+  P('/api/person/facts',{name:name,facts:list});
+  setTimeout(H,400);
+}
 
 fetch('/api/dances').then(r=>r.json()).then(d=>{
   const db=$('d-grid');
@@ -617,9 +676,11 @@ def _safe_float(v, default: float) -> float:
 
 class WebStage:
     def __init__(self, state: LiveState, camera_hub: CameraHub,
+                 fid: "FaceIdentifier | None" = None,
                  host: str = "0.0.0.0", port: int = 8080) -> None:
         self.state = state
         self.camera_hub = camera_hub
+        self.fid = fid  # FaceIdentifier — powers gallery photos + delete/rename
         self.host = host
         self.port = port
         self._stop_flag = threading.Event()
@@ -750,7 +811,74 @@ class WebStage:
         @self.app.get("/api/people")
         def _pe() -> dict:
             from reachy_demo.memory import known_people, load_person_facts
-            return {"people": [{"name": n, "facts": load_person_facts(n)} for n in known_people()]}
+            # Prefer the face-id roster (has photos) over memory.known_people()
+            # so the gallery names resolve to a faces/<slug>/ directory.
+            if self.fid is not None and self.fid._ref_names:
+                names = sorted(set(self.fid._ref_names))
+            else:
+                names = known_people()
+            return {"people": [{"name": n, "facts": load_person_facts(n)} for n in names]}
+
+        @self.app.get("/api/face/{name}")
+        def _face(name: str):
+            slug = _face_slug(name)
+            if not slug:
+                raise HTTPException(status_code=404, detail="not found")
+            faces_root = (self.fid.faces_dir if self.fid is not None else _DEFAULT_FACES_DIR).resolve()
+            pdir = (faces_root / slug).resolve()
+            if pdir != faces_root and faces_root not in pdir.parents:
+                raise HTTPException(status_code=400, detail="invalid name")
+            if not pdir.is_dir():
+                raise HTTPException(status_code=404, detail="not found")
+            photos = []
+            for pat in ("*.jpg", "*.jpeg", "*.png"):
+                photos.extend(pdir.glob(pat))
+            if not photos:
+                raise HTTPException(status_code=404, detail="no photo")
+            photos.sort(key=lambda p: p.stat().st_mtime)
+            return FileResponse(str(photos[-1]))
+
+        @self.app.post("/api/person/delete")
+        async def _pdel(request: Request) -> dict:
+            d = await _safe_body(request)
+            name = str(d.get("name", "")).strip()[:80]
+            if not name or name.lower() == "visitor":
+                return {"ok": False, "error": "invalid name"}
+            if self.fid is None:
+                return {"ok": False, "error": "face id not available"}
+            removed = self.fid.delete_person(name)
+            from reachy_demo.memory import delete_person_memory
+            delete_person_memory(name)
+            self.state.known_person_count = (
+                len(set(self.fid._ref_names)) if self.fid._ref_names else 0)
+            return {"ok": removed > 0, "removed": removed}
+
+        @self.app.post("/api/person/rename")
+        async def _pren(request: Request) -> dict:
+            d = await _safe_body(request)
+            old = str(d.get("old", "")).strip()[:80]
+            new = str(d.get("new", "")).strip()[:80]
+            if not old or not new or new.lower() == "visitor":
+                return {"ok": False, "error": "invalid name"}
+            if self.fid is None:
+                return {"ok": False, "error": "face id not available"}
+            renamed = self.fid.rename_person(old, new)
+            from reachy_demo.memory import rename_person_facts
+            rename_person_facts(old, new)
+            self.state.known_person_count = (
+                len(set(self.fid._ref_names)) if self.fid._ref_names else 0)
+            return {"ok": renamed > 0, "renamed": renamed}
+
+        @self.app.post("/api/person/facts")
+        async def _pfacts(request: Request) -> dict:
+            d = await _safe_body(request)
+            name = str(d.get("name", "")).strip()[:80]
+            facts = d.get("facts", [])
+            if not name or name.lower() == "visitor" or not isinstance(facts, list):
+                return {"ok": False, "error": "invalid"}
+            from reachy_demo.memory import set_person_facts
+            ok = set_person_facts(name, [str(f)[:200] for f in facts][:20])
+            return {"ok": ok}
 
     def _video_stream(self):
         heartbeat = 0

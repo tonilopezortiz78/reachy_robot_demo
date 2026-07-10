@@ -34,6 +34,12 @@ def load_api_key(root: Path | None = None) -> str | None:
 
 # ── STT ───────────────────────────────────────────────────────────────────────
 
+# Whisper model for transcription. `whisper-large-v3-turbo` is ~2x faster and still
+# multilingual (the default here — the demo needs snappy turn-taking). The full
+# `whisper-large-v3` is slightly more accurate on long/hard non-English speech —
+# flip back live with: REACHY_STT_MODEL=whisper-large-v3 ./run.sh …
+STT_MODEL = os.environ.get("REACHY_STT_MODEL", "whisper-large-v3-turbo")
+
 def transcribe(client: Groq, wav_bytes: bytes, language: str | None = None) -> str:
     """
     Transcribe WAV audio bytes via Groq Whisper.
@@ -48,7 +54,7 @@ def transcribe(client: Groq, wav_bytes: bytes, language: str | None = None) -> s
     """
     kwargs = dict(
         file=("audio.wav", wav_bytes, "audio/wav"),
-        model="whisper-large-v3",
+        model=STT_MODEL,
         response_format="text",
     )
     if language is not None:
@@ -68,7 +74,7 @@ def transcribe_lang_verbose(client: Groq, wav_bytes: bytes) -> tuple[str, str, d
     """
     resp = client.audio.transcriptions.create(
         file=("audio.wav", wav_bytes, "audio/wav"),
-        model="whisper-large-v3",
+        model=STT_MODEL,
         response_format="verbose_json",
     )
     text = (getattr(resp, "text", "") or "").strip()

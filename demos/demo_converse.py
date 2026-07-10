@@ -75,6 +75,7 @@ from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_edge import stream_to_speaker
 from reachy_demo import tts_edge
 from reachy_demo.web_server import WebDashboard
+from reachy_demo.web_stage import WebStage
 
 _SEARCH_HINT = re.compile(
     r"\b(price|weather|news|today|latest|who is|when|score|current|how much|202\d|stock|bitcoin|eth)\b",
@@ -215,6 +216,29 @@ KNOWN_FACE_GREETINGS = [
     "Welcome back, {name}! Network School is better with you here!",
     "{name}! My circuits are lighting up — hello!",
 ]
+# Greetings that show off a remembered funny/personal fact — makes Reachy feel
+# like it truly knows the person. {fact} is a stored third-person note about them.
+KNOWN_FACE_GREETINGS_WITH_FACT = [
+    "{name}! I remember — {fact} So good to see you!",
+    "Hey {name}! Weren't you the one where {fact}? Welcome back!",
+    "Oh it's {name}! {fact} — I never forget! Hello!",
+]
+
+
+def greeting_for_known(name: str) -> str:
+    """Pick a greeting for a recognised person, ~55% of the time weaving in a
+    remembered fact about them (if any) so Reachy feels personal, not scripted."""
+    facts = []
+    try:
+        facts = load_person_facts(name) or []
+    except Exception:
+        pass
+    if facts and random.random() < 0.55:
+        fact = random.choice(facts).rstrip(".")
+        # Lower-case the first letter so it reads naturally mid-sentence.
+        fact = (fact[:1].lower() + fact[1:]) if fact else fact
+        return random.choice(KNOWN_FACE_GREETINGS_WITH_FACT).format(name=name, fact=fact)
+    return random.choice(KNOWN_FACE_GREETINGS).format(name=name)
 UNKNOWN_FACE_GREETINGS = [
     "Hello there! I'm Reachy, the Network School robot! Welcome!",
     "Hi! I'm Reachy! I don't think we've met yet — welcome to Network School!",
@@ -313,6 +337,24 @@ def _valid_person_name(name: str) -> bool:
     return (2 <= len(name) <= 20
             and all(ch.isalpha() or ch in " -'" for ch in name)
             and any(ch.isalpha() for ch in name))
+
+
+# Fast multilingual pre-filter so detect_rename() (a full, blocking Groq round
+# trip, ~200-500ms) only fires on utterances that plausibly state a name. Most
+# short replies ("yes please", "I like pizza", "what time is it") obviously
+# aren't self-introductions — skipping them removes a stray LLM call from the
+# critical path on a large fraction of turns. The LLM stays the final arbiter
+# whenever this matches, so recall is unchanged; we just stop paying on turns
+# that can't qualify. (First-time onboarding is a separate path, untouched.)
+_NAME_HINT = re.compile(
+    r"name|call me|llamo|nombre|appelle|\bnom\b|heiß|chamo|nome|chiamo|"
+    r"зовут|имя|名前|呼んで|名字|이름|اسم|नाम",
+    re.IGNORECASE,
+)
+
+
+def _maybe_self_intro(text: str) -> bool:
+    return bool(_NAME_HINT.search(text or ""))
 
 
 def detect_rename(client, text: str) -> str | None:
@@ -761,7 +803,10 @@ def main(dashboard_cls=None):
 
     if cam is not None:
         _cls = dashboard_cls or WebDashboard
-        dashboard = _cls(state, cam, host="0.0.0.0", port=8080)
+        dash_kwargs = {"host": "0.0.0.0", "port": 8080}
+        if _cls is WebStage:
+            dash_kwargs["fid"] = fid  # gallery photos + delete/rename endpoints need it
+        dashboard = _cls(state, cam, **dash_kwargs)
         dashboard.start()
         log.event(f"  Web dashboard: http://localhost:8080")
         phrases.prerender_async(log)   # cache quick-phrase WAVs in the background
@@ -986,7 +1031,7 @@ def main(dashboard_cls=None):
                                 engine.face_name = name
                                 now = time.time()
                                 if arrival or now - greeted_names.get(name, 0) > GREET_COOLDOWN_S:
-                                    txt = random.choice(KNOWN_FACE_GREETINGS).format(name=name)
+                                    txt = greeting_for_known(name)
                                     log.event(f"  [face] greeting {name} ({conf:.0%})"
                                               f"{' [arrival]' if arrival else ''}")
                                     greeted_names[name] = now
@@ -1363,6 +1408,15 @@ def main(dashboard_cls=None):
                                       or matches_command(text, SLEEP_COMMANDS)
                                       or matches_command(text, WAKE_COMMANDS))
 
+                        # Kick off any web search NOW (start of the turn) so it runs
+                        # in the background during the onboarding/rename/command
+                        # gauntlet below instead of blocking the reply. If the turn
+                        # takes an early continue, the future is just discarded.
+                        search_future = (
+                            action_pool.submit(web_search, text)
+                            if (state.robot_online and not is_command
+                                and _needs_search(text)) else None)
+
                         # Voice sleep/wake — checked before EVERYTHING else so
                         # an asleep robot never onboards, renames, or replies.
                         if not state.robot_online:
@@ -1515,7 +1569,8 @@ def main(dashboard_cls=None):
                         # detect_rename, and created a bogus roster person with
                         # the current speaker's face — corrupting recognition.
                         if (cam is not None and not is_command
-                                and 2 <= len(text.split()) <= 8):
+                                and 2 <= len(text.split()) <= 8
+                                and _maybe_self_intro(text)):
                             new_name = detect_rename(groq_client, text)
                             if new_name and not _valid_person_name(new_name):
                                 log.event(f"  [rename] rejected junk name {new_name!r}")
@@ -1581,9 +1636,6 @@ def main(dashboard_cls=None):
                                 speak_cue(listener, "listening", current_lang)
                                 continue
 
-                        search_future = (
-                            action_pool.submit(web_search, text)
-                            if _needs_search(text) else None)
                         t1 = time.time()
                         try:
                             # Hold the speech lock for the whole turn so async

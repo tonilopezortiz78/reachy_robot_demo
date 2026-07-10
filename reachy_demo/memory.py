@@ -205,6 +205,57 @@ def remember_person(name: str, facts) -> None:
         pass
 
 
+def set_person_facts(name: str, facts) -> bool:
+    """Replace ALL stored facts for `name` with `facts` (list of str), for
+    operator add/edit/delete from the dashboard. Trims/de-dupes/caps like
+    remember_person but overwrites instead of appending. Returns True on write.
+    Never raises."""
+    slug = _person_slug(name)
+    if not slug:
+        return False
+    if isinstance(facts, str):
+        facts = [facts]
+    try:
+        clean, seen = [], set()
+        for f in facts:
+            if not isinstance(f, str):
+                continue
+            f = f.strip()
+            if f and f.lower() not in seen:
+                clean.append(f)
+                seen.add(f.lower())
+        clean = clean[-MAX_PERSON_FACTS:]
+        with _person_lock:
+            path = _person_path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(
+                {"name": name.strip(), "facts": clean},
+                ensure_ascii=False, indent=2,
+            ))
+            os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
+def delete_person_memory(name: str) -> bool:
+    """Delete the per-person facts file for `name` (used when an enrolled person
+    is removed from the dashboard). Returns True if a file was removed. Never raises."""
+    slug = _person_slug(name)
+    if not slug:
+        return False
+    try:
+        with _person_lock:
+            p = _person_path(name)
+            if p.exists():
+                p.unlink()
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def person_summary_block(name: str) -> str:
     """Render the most-recent facts about `name` as a compact system-prompt
     block. '' if no facts / unknown / visitor."""
@@ -231,3 +282,58 @@ def known_people() -> list[str]:
         return names
     except Exception:
         return []
+
+
+def rename_person_facts(old_name: str, new_name: str) -> bool:
+    """Move the per-person facts file old→new slug, updating the stored "name".
+    If new already has facts (a merge), old facts are folded in de-duplicated so
+    a rename never destroys data. False if old has no file or a slug is invalid;
+    True (no-op) if slugs match. Never raises."""
+    old_slug = _person_slug(old_name)
+    new_slug = _person_slug(new_name)
+    if not old_slug or not new_slug:
+        return False
+    if old_slug == new_slug:
+        return True
+    old_path = PEOPLE_DIR / f"{old_slug}.json"
+    with _person_lock:
+        if not old_path.exists():
+            return False
+        try:
+            data = json.loads(old_path.read_text())
+            old_facts = data.get("facts") if isinstance(data, dict) else None
+            old_facts = [f for f in old_facts if isinstance(f, str)] if isinstance(old_facts, list) else []
+        except Exception:
+            old_facts = []
+
+        new_path = PEOPLE_DIR / f"{new_slug}.json"
+        try:
+            data = json.loads(new_path.read_text())
+            existing = data.get("facts") if isinstance(data, dict) else None
+            existing = [f for f in existing if isinstance(f, str)] if isinstance(existing, list) else []
+        except Exception:
+            existing = []
+
+        seen = {f.lower() for f in existing}
+        merged = list(existing)
+        for f in old_facts:
+            if f.lower() not in seen:
+                merged.append(f)
+                seen.add(f.lower())
+        merged = merged[-MAX_PERSON_FACTS:]
+
+        try:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = new_path.with_name(new_path.name + ".tmp")
+            tmp.write_text(json.dumps(
+                {"name": new_name.strip(), "facts": merged},
+                ensure_ascii=False, indent=2,
+            ))
+            os.replace(tmp, new_path)
+        except Exception:
+            return False
+        try:
+            old_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return True

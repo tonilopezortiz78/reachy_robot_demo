@@ -69,6 +69,11 @@ RECOG_INTERVAL = 15   # frames between recognition runs per track
 # force-matched to whoever is enrolled (the "everyone is Tony" bug). Below this,
 # treat the person as an unidentified visitor until they step closer.
 MIN_RECOG_PX = 84
+# Min cosine gap between the best match and the best DIFFERENT enrolled person.
+# Guards against confident-but-ambiguous matches when several people are enrolled
+# (helps the "everyone is Tony" case beyond the size gate). No effect with a
+# single enrolled person (there is no "other" to compare against).
+MARGIN_MIN = 0.06
 ENROLL_IOU_MIN = 0.15  # min IoU vs target_box for targeted enrolment (person may shift)
 
 RELATION_NORM = np.linalg.norm(_ARC_FACE_REF, axis=None) or 1.0
@@ -615,6 +620,54 @@ class FaceIdentifier:
 
             return removed
 
+    def delete_person(self, name: str) -> int:
+        """Dashboard-facing alias for remove_person() — deletes a person from
+        the roster (in-memory _ref_embs/_ref_names + faces/<slug>/ on disk).
+        Returns embeddings removed."""
+        return self.remove_person(name)
+
+    def rename_person(self, old_name: str, new_name: str) -> int:
+        """Relabel a person's roster embeddings old→new and rename their
+        faces/<old_slug>/ dir to faces/<new_slug>/. If new_slug already exists
+        (a merge), photos are moved in collision-safely rather than overwritten.
+        Resets tracker + cache so a just-renamed face re-recognizes fresh.
+        Returns roster entries relabeled. Thread-safe via self._lock."""
+        with self._lock:
+            old_target = old_name.strip().lower()
+            new_clean = new_name.strip()
+            if not old_target or not new_clean:
+                return 0
+            old_slug = old_target.replace(" ", "_")
+            new_slug = new_clean.lower().replace(" ", "_")
+
+            relabeled = 0
+            for i, n in enumerate(self._ref_names):
+                if n.strip().lower() == old_target:
+                    self._ref_names[i] = new_clean
+                    relabeled += 1
+
+            old_dir = self.faces_dir / old_slug
+            new_dir = self.faces_dir / new_slug
+            if old_dir.exists() and old_dir != new_dir:
+                if new_dir.exists():
+                    for f in old_dir.iterdir():
+                        if not f.is_file():
+                            continue
+                        dest = new_dir / f.name
+                        i = 1
+                        while dest.exists():
+                            dest = new_dir / f"{f.stem}_{i}{f.suffix}"
+                            i += 1
+                        shutil.move(str(f), str(dest))
+                    shutil.rmtree(old_dir, ignore_errors=True)
+                else:
+                    old_dir.rename(new_dir)
+
+            self._tracker = _IoUTracker()
+            self._cache = {}
+
+            return relabeled
+
     def _yk_det(self, rgb_frame: np.ndarray):
         bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
         h, w = bgr.shape[:2]
@@ -667,7 +720,16 @@ class FaceIdentifier:
             sims = np.array([_cosine(emb, ref) for ref in self._ref_embs])
             best_idx = int(np.argmax(sims))
             best_sim = float(sims[best_idx])
-            if best_sim > self.tol:
+            best_name = self._ref_names[best_idx]
+            # Margin gate: accept only if the winner clearly beats the closest OTHER
+            # person. Absolute threshold alone lets a stranger squeak past when several
+            # people are enrolled (the "everyone is Tony" false-match). Compare against
+            # the best DIFFERENT person — not other embeddings of the same person, which
+            # are near-identical and would otherwise collapse the margin and reject a
+            # correct match.
+            other = [s for s, n in zip(sims, self._ref_names) if n != best_name]
+            margin = (best_sim - max(other)) if other else 1.0
+            if best_sim > self.tol and margin >= MARGIN_MIN:
                 return (self._ref_names[best_idx], best_sim)
             return ("visitor", best_sim)
         else:
