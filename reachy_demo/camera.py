@@ -58,17 +58,39 @@ class CameraHub:
             pass
         return None
 
-    def _pick_device(self) -> "cv2.VideoCapture | None":
-        """Find a working capture device. Prefer the configured node, but after a
-        USB re-enumeration (the dance can jostle the cable) the camera may come back
-        on a different /dev/videoN, so fall back to probing the even-numbered nodes
-        (UVC capture nodes; odd ones are usually metadata)."""
-        candidates = [self.dev] + [f"/dev/video{i}" for i in (2, 0, 4, 6, 1, 3)]
-        seen = set()
-        for dev in candidates:
-            if dev in seen or not os.path.exists(dev):
+    def _reachy_camera_nodes(self) -> list:
+        """/dev/videoN nodes the kernel labels as the ROBOT camera. A USB
+        re-enumeration (dance jostles the cable, or a replug) can move the camera
+        to a new node (seen it jump /dev/video2 → video3/4), so we must find it by
+        NAME — never fall back to the laptop's 'Integrated Camera', which sees the
+        room, not the robot's view (CLAUDE.md warns about this)."""
+        nodes = []
+        try:
+            names = sorted(os.listdir("/dev"))
+        except Exception:
+            names = []
+        for base in names:
+            if not base.startswith("video"):
                 continue
-            seen.add(dev)
+            try:
+                label = open(f"/sys/class/video4linux/{base}/name").read().strip()
+            except Exception:
+                label = ""
+            if "reachy" in label.lower():
+                nodes.append(f"/dev/{base}")
+        return nodes
+
+    def _pick_device(self) -> "cv2.VideoCapture | None":
+        """Open a working ROBOT-camera capture. Prefer the configured node, then any
+        node named 'Reachy Mini Camera' (survives node changes). The read() probe
+        skips a node that opens but yields no frames (the UVC metadata node)."""
+        candidates = []
+        if os.path.exists(self.dev):
+            candidates.append(self.dev)
+        for n in self._reachy_camera_nodes():
+            if n not in candidates:
+                candidates.append(n)
+        for dev in candidates:
             cap = self._open_device(dev)
             if cap is not None:
                 ok, _ = cap.read()          # a node that opens but never reads is useless
@@ -79,9 +101,14 @@ class CameraHub:
         return None
 
     def start(self):
-        self._cap = self._open_device(self.dev)
+        # Probe by name so a camera that re-enumerated to a new /dev/videoN (not the
+        # hard-coded video2) is still found at startup — otherwise the whole web
+        # dashboard silently never starts (it's gated on the camera opening).
+        self._cap = self._pick_device()
         if self._cap is None:
-            raise RuntimeError(f"camera: cannot open {self.dev}")
+            raise RuntimeError(f"camera: no Reachy camera node found (tried {self.dev} + by-name)")
+        if self.dev != CAM_DEV:
+            print(f"  [camera] using {self.dev} (re-enumerated from {CAM_DEV})", flush=True)
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         self.started_at = time.time()
