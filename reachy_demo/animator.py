@@ -60,7 +60,7 @@ def _s(amp, freq, t, phase=0.0):
     return amp * math.sin(2 * math.pi * freq * t + phase)
 
 
-def _send(mini, p, y, r, by, ant_l, ant_r):
+def _send(mini, p, y, r, by, ant_l, ant_r, on_conn_lost=None):
     # Tighter combined envelope — individual axes look fine but the IK solver
     # rejects certain combined (pitch+roll+yaw+body_yaw) poses as self-colliding.
     # These limits were tuned empirically: they keep the animation expressive
@@ -76,6 +76,11 @@ def _send(mini, p, y, r, by, ant_l, ant_r):
             head=create_head_pose(pitch=p, yaw=y, roll=r, degrees=False),
             antennas=[al, ar], body_yaw=by,
         )
+    except ConnectionError:
+        # USB link dropped — flag it so the main loop can reconnect. (IK errors
+        # below are routine/expected and stay swallowed; a dead connection is not.)
+        if on_conn_lost is not None:
+            on_conn_lost()
     except Exception:
         pass  # IK error — clamp didn't help; swallow and let next frame retry
 
@@ -460,8 +465,19 @@ class Animator:
         self._lock     = threading.Lock()
         self._stop     = threading.Event()
         self._paused   = threading.Event()
+        self._conn_lost = threading.Event()   # set on ConnectionError (USB drop)
         self._t        = threading.Thread(target=self._loop, daemon=True)
         self._t.start()
+
+    def _mark_conn_lost(self):
+        self._conn_lost.set()
+
+    def connection_lost(self) -> bool:
+        """True once a servo call has hit ConnectionError since the last clear."""
+        return self._conn_lost.is_set()
+
+    def clear_connection_lost(self):
+        self._conn_lost.clear()
 
     def set_state(self, state):
         with self._lock:
@@ -531,6 +547,8 @@ class Animator:
         def _runner():
             try:
                 self.mini.play_move(move, play_frequency=80.0, sound=False)
+            except ConnectionError:
+                self._mark_conn_lost()
             except Exception:
                 pass
             time.sleep(duration)
@@ -630,9 +648,9 @@ class Animator:
                 ar += ab
 
                 if self.mirror:
-                    _send(self.mini, p, -y, -r, -by, al, ar)
+                    _send(self.mini, p, -y, -r, -by, al, ar, on_conn_lost=self._mark_conn_lost)
                 else:
-                    _send(self.mini, p, y, r, by, al, ar)
+                    _send(self.mini, p, y, r, by, al, ar, on_conn_lost=self._mark_conn_lost)
                 consecutive_errors = 0
 
             except Exception:

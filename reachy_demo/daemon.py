@@ -37,6 +37,44 @@ def start_daemon() -> subprocess.Popen:
     return wait_for_daemon(launch_daemon())
 
 
+def reconnect_reachy_mini(old_mini, daemon_proc, log=None, max_attempts=5):
+    """Recover from a dead SDK connection (USB link dropped — e.g. a vigorous dance
+    jostled the cable). Restarts the daemon only if port 8000 isn't answering (which
+    also re-discovers /dev/ttyACM* if it re-enumerated), then rebuilds the ReachyMini
+    client and wakes it. Returns (new_mini, daemon_proc). Raises after max_attempts so
+    the caller's supervisor can fall back to a full process restart.
+    """
+    from reachy_mini import ReachyMini
+    try:
+        old_mini.client.disconnect()
+    except Exception:
+        pass
+    for attempt in range(1, max_attempts + 1):
+        try:
+            daemon_up = False
+            try:
+                with socket.create_connection(("127.0.0.1", 8000), timeout=0.5):
+                    daemon_up = True
+            except OSError:
+                daemon_up = False
+            if not daemon_up:
+                if log:
+                    log.event(f"  [reconnect] daemon down — restarting "
+                              f"(attempt {attempt}/{max_attempts})")
+                daemon_proc = start_daemon()
+            new_mini = ReachyMini(connection_mode="localhost_only",
+                                  media_backend="no_media", spawn_daemon=False)
+            new_mini.wake_up()
+            if log:
+                log.event(f"  [reconnect] robot reconnected (attempt {attempt})")
+            return new_mini, daemon_proc
+        except Exception as e:
+            if log:
+                log.error("reconnect", e)
+            time.sleep(min(2 * attempt, 8))   # backoff — avoids a tight restart loop
+    raise RuntimeError(f"Could not reconnect to Reachy after {max_attempts} attempts")
+
+
 def stop_daemon(proc: subprocess.Popen) -> None:
     """Terminate the daemon process, killing it if it doesn't exit within 8 s.
 

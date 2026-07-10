@@ -53,7 +53,7 @@ from reachy_demo import phrases
 from reachy_demo.camera import CameraHub
 from reachy_demo.cerebras_client import make_client as make_cerebras, stream_chat as cerebras_stream, has_key as cerebras_has_key, MODEL as CEREBRAS_MODEL
 from reachy_demo.cues import prewarm, set_translator, speak_cue, speak_thinking
-from reachy_demo.daemon import launch_daemon, stop_daemon, wait_for_daemon
+from reachy_demo.daemon import launch_daemon, stop_daemon, wait_for_daemon, reconnect_reachy_mini
 from reachy_demo.dance import DANCE_KEYWORDS, do_macarena
 from reachy_demo.face_id import FaceIdentifier
 from reachy_demo.groq_client import (
@@ -1122,7 +1122,11 @@ def main(dashboard_cls=None):
                     if now - last_repeat < REPEAT_COOLDOWN_S:
                         return
                     last_repeat = now
-                    speak_cue(listener, "repeat", current_lang)
+                    # The "thinking" cue now plays in the background and may still be
+                    # mid-playback here; hold the lock so this "repeat" cue doesn't
+                    # collide with it on the exclusive speaker device.
+                    with speech_lock:
+                        speak_cue(listener, "repeat", current_lang)
 
                 state.current_lang = current_lang
                 state.uptime_s = 0.0
@@ -1140,6 +1144,17 @@ def main(dashboard_cls=None):
             try:
                 while True:
                     state.uptime_s = time.time() - state.started_at
+                    # Auto-reconnect: a USB drop (often a vigorous dance jostling the
+                    # cable) kills the SDK link; the animator flags it here. Rebuild the
+                    # connection and re-point the one holder (anim.mini) — every other
+                    # user of `mini` reads this local at call time.
+                    if anim.connection_lost():
+                        log.event("  [reconnect] link drop detected — reconnecting...")
+                        state.robot_online = False
+                        mini, daemon_proc = reconnect_reachy_mini(mini, daemon_proc, log=log)
+                        anim.mini = mini
+                        anim.clear_connection_lost()
+                        state.robot_online = True
                     if state.pending_wake:
                         state.pending_wake = False
                         try: mini.wake_up()
@@ -1220,6 +1235,12 @@ def main(dashboard_cls=None):
                             log.event(f"  [web] dance: {d['label']}")
                         except Exception as e:
                             log.event(f"  [web] dance failed: {e}")
+                            if isinstance(e, ConnectionError):
+                                state.robot_online = False
+                                mini, daemon_proc = reconnect_reachy_mini(mini, daemon_proc, log=log)
+                                anim.mini = mini
+                                anim.clear_connection_lost()
+                                state.robot_online = True
 
                     # Web Mute button: state.muted was previously set by the
                     # dashboard but never applied to anything. Reconcile it
@@ -1352,34 +1373,45 @@ def main(dashboard_cls=None):
                         try:
                             stt_future = action_pool.submit(
                                 transcribe_lang_robust, groq_client, pcm_to_wav_bytes(pcm))
-                            speak_thinking(listener, current_lang or "English")
+                            # Play the "thinking" filler cue in the BACKGROUND instead
+                            # of blocking here. MEASURED: Whisper itself finishes in
+                            # ~0.3s, but the spoken filler plays ~0.7-2.0s — blocking
+                            # on it before reading stt_future.result() was the ENTIRE
+                            # "STT is 1-2s live but 0.3s isolated" gap. The lock is
+                            # acquired synchronously now and released by the cue task,
+                            # so the later `with speech_lock: engine.speak()` still
+                            # waits for the cue to finish (speaker never double-booked).
+                            cue_lang = current_lang or "English"
+                            speech_lock.acquire()
+                            def _play_thinking_cue():
+                                try:
+                                    speak_thinking(listener, cue_lang)
+                                finally:
+                                    speech_lock.release()
+                            try:
+                                action_pool.submit(_play_thinking_cue)
+                            except Exception:
+                                speech_lock.release()
+                                speak_thinking(listener, cue_lang)   # fall back to sync
                             text, final_lang, stt_retried, stt_stats = stt_future.result()
                             stt_dt = time.time() - t0
                             state.stt_s = stt_dt
-                            # Language hysteresis: Whisper misdetects short or
-                            # quiet utterances (Catalan/Bengali came back for
-                            # English speakers), which flipped the reply
-                            # language mid-chat. Switch only when the SAME new
-                            # language is heard twice within a 3-utterance
-                            # window (so EN/ES alternators still get both).
-                            # Exception: a long first-ever utterance is trusted
-                            # immediately — misdetections cluster on short ones.
-                            trust_first = (not lang_known
-                                           and len(text.split()) >= 4)
+                            # Language switching — RESPONSIVE, because people
+                            # deliberately switch languages at this demo ("say it in
+                            # mine!"). Trust Whisper's detected language IMMEDIATELY for
+                            # any real utterance; only ignore 1-2 char noise (where the
+                            # detection is unreliable). The old 2-hit hysteresis made
+                            # every switch lag a whole turn AND forced the WRONG language
+                            # on the in-between reply — that was the "I switched to
+                            # Spanish but Reachy kept answering in Chinese" bug. The
+                            # transcript TEXT is the real signal anyway (the LLM matches
+                            # the language it reads), so a rare mislabel self-corrects.
+                            real_utt = len(text.strip()) >= 3 or len(text.split()) >= 2
                             if (final_lang and final_lang != current_lang
-                                    and not trust_first):
-                                if pending_lang[0] == final_lang:
-                                    pending_lang[0] = None      # confirmed
-                                else:
-                                    pending_lang[0] = final_lang
-                                    pending_ttl[0] = 2          # survives 2 misses
-                                    log.event(f"  [lang] heard {final_lang} once — "
-                                              f"replying in {current_lang} until confirmed")
-                                    final_lang = current_lang
-                            elif pending_lang[0]:
-                                pending_ttl[0] -= 1
-                                if pending_ttl[0] <= 0:
-                                    pending_lang[0] = None
+                                    and not real_utt):
+                                final_lang = current_lang   # too short to trust a switch
+                            elif final_lang and final_lang != current_lang:
+                                log.event(f"  [lang] → {final_lang}")
                             directive = language_directive(final_lang)
                         except Exception as e:
                             log.error("transcribe", e)
@@ -1713,6 +1745,15 @@ def main(dashboard_cls=None):
                                     # Never let it kill the demo — log, chime, recover.
                                     log.error("dance", e)
                                     error_chime()
+                                    # A vigorous dance is also the #1 cause of a USB
+                                    # cable jostle → dead SDK link. Reconnect instead
+                                    # of limping on with a frozen robot.
+                                    if isinstance(e, ConnectionError):
+                                        state.robot_online = False
+                                        mini, daemon_proc = reconnect_reachy_mini(mini, daemon_proc, log=log)
+                                        anim.mini = mini
+                                        anim.clear_connection_lost()
+                                        state.robot_online = True
                                 finally:
                                     listener.unmute()
                                     while not events.empty():
@@ -1741,6 +1782,13 @@ def main(dashboard_cls=None):
                     mini.goto_sleep()
                 except Exception as e:
                     log.error("goto_sleep", e)
+                # The `with ReachyMini(...)` __exit__ disconnects the ORIGINAL object,
+                # not whatever `mini` was rebound to by a reconnect — disconnect the
+                # current client explicitly so a reconnected session frees its socket.
+                try:
+                    mini.client.disconnect()
+                except Exception:
+                    pass
                 face_stop.set()
                 if face_thread:
                     face_thread.join(timeout=1.0)
