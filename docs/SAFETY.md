@@ -2,7 +2,7 @@
 
 ## What probably happened
 
-During one of my long test runs, the robot was being commanded in an infinite loop (`while True` in `demo3_official_sine.py` and the upstream `examples/minimal_demo.py`). The motors were continuously active for 60+ seconds, holding the head **against gravity** at various poses.
+During an early infinite-loop test, the robot was being commanded continuously (`while True`). The motors were continuously active for 60+ seconds, holding the head **against gravity** at various poses.
 
 A small servo's torque rating is fine for a quick gesture, but if you ask it to hold a position for tens of seconds, the current draw rises, the windings heat up, and the case gets hot enough to smell. The Reachy Mini uses Feetech STS3215 servos, which are rated for 15 kg·cm of torque but are not designed for continuous maximum-effort holding.
 
@@ -23,17 +23,39 @@ A small servo's torque rating is fine for a quick gesture, but if you ask it to 
 ## The state machine I recommend for any demo
 
 ```python
-with ReachyMini(connection_mode="localhost_only",
-                media_backend="no_media",
-                spawn_daemon=True) as mini:
-    mini.wake_up()
+import socket, subprocess, time
+
+def start_daemon():
+    proc = subprocess.Popen(["reachy-mini-daemon", "--no-media"], start_new_session=True)
+    for _ in range(30):
+        time.sleep(0.5)
+        try:
+            with socket.create_connection(("127.0.0.1", 8000), timeout=0.3):
+                return proc
+        except OSError:
+            pass
+    raise RuntimeError("Daemon did not start within 15 s")
+
+daemon_proc = start_daemon()
+try:
+    with ReachyMini(connection_mode="localhost_only",
+                    media_backend="no_media",
+                    spawn_daemon=False) as mini:
+        mini.wake_up()
+        try:
+            # ... do your moves here, each <2s, separated by sleeps ...
+        finally:
+            mini.goto_sleep()      # ALWAYS, even on exception
+finally:
+    daemon_proc.terminate()
     try:
-        # ... do your moves here, each <2s, separated by sleeps ...
-    finally:
-        mini.goto_sleep()      # ALWAYS, even on exception
+        daemon_proc.wait(timeout=8)
+    except subprocess.TimeoutExpired:
+        daemon_proc.kill()
+        daemon_proc.wait()
 ```
 
-The `try/finally` is important. If anything inside the block raises, you still go to sleep.
+The `try/finally` is important. If anything inside the block raises, you still go to sleep. The daemon cleanup in the outer `finally` ensures the daemon is always shut down.
 
 ## Emergency stop
 

@@ -111,7 +111,7 @@ cp your_photo.jpg faces/tony/
 
 **What it does:** Same personality and knowledge base as Demo 3, but uses a single Microsoft multilingual voice — `en-US-AvaMultilingualNeural` — for all languages instead of Piper. Pipelined synthesis hides latency — sentence N+1 is synthesized in the background while sentence N is playing.
 
-**Voice:** `en-US-AvaMultilingualNeural` at RATE `+30%`, PITCH `+52Hz`, VOL `2.5`. AvaMultilingual is an adult voice at 0Hz; the `+52Hz` pitch lift is what makes it sound cute and young like a small robot. The same voice handles every language.
+**Voice:** `en-US-AvaMultilingualNeural` at RATE `+20%`, PITCH `+48Hz`, VOL `2.5`. AvaMultilingual is an adult voice at 0Hz; the `+48Hz` pitch lift is what makes it sound cute and young like a small robot. The same voice handles every language.
 
 **Pipeline:**
 ```
@@ -122,7 +122,7 @@ Mic → Silero VAD → Groq Whisper STT → Groq LLaMA → edge-tts → Robot sp
 - Silero VAD — voice activity detection (local)
 - Groq API (`whisper-large-v3`) — speech-to-text (full model for best multilingual accuracy)
 - Groq API (`meta-llama/llama-4-scout-17b-16e-instruct`) — language model
-- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+52Hz`) — synthesis for any language, Microsoft cloud
+- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+48Hz`) — synthesis for any language, Microsoft cloud
 - ffmpeg — resample + volume
 - aplay — robot speaker
 
@@ -145,7 +145,7 @@ Mic → Silero VAD → Groq Whisper STT → Groq LLaMA → edge-tts → Robot sp
 - Silero VAD — voice activity detection with barge-in (local)
 - Groq API (`whisper-large-v3`) — speech-to-text (full model for best multilingual accuracy)
 - Groq API (`meta-llama/llama-4-scout-17b-16e-instruct`) — language model
-- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+52Hz`) — synthesis for any language, Microsoft cloud
+- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+48Hz`) — synthesis for any language, Microsoft cloud
 - ffmpeg — resample + volume
 - aplay — robot speaker
 
@@ -167,7 +167,7 @@ Mic → Silero VAD → Groq Whisper STT → Groq LLaMA ┬→ edge-tts → Robot
 - Silero VAD — voice activity detection with barge-in (local)
 - Groq API (`whisper-large-v3`) — speech-to-text (full model for best multilingual accuracy)
 - Groq API (`meta-llama/llama-4-scout-17b-16e-instruct`) — language model + parallel gesture picker
-- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+52Hz`) — synthesis for any language, Microsoft cloud
+- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+48Hz`) — synthesis for any language, Microsoft cloud
 - ffmpeg — resample + volume
 - aplay — robot speaker
 
@@ -189,7 +189,7 @@ Mic → Silero VAD → Groq Whisper STT → opencode run (DeepSeek V4 Flash) ┬
 - Silero VAD — voice activity detection with barge-in (local)
 - Groq API (`whisper-large-v3`) — speech-to-text (full model for best multilingual accuracy)
 - opencode CLI (`opencode run`, default model DeepSeek V4 Flash) — language model + gesture picker
-- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+52Hz`) — synthesis for any language, Microsoft cloud
+- edge-tts (`en-US-AvaMultilingualNeural`, pitch `+48Hz`) — synthesis for any language, Microsoft cloud
 - ffmpeg — resample + volume
 - aplay — robot speaker
 

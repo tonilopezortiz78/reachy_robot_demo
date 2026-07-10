@@ -7,9 +7,9 @@ cd /home/tony/software/robots/reachy
 ./menu.sh
 ```
 
-`menu.sh` lists the five working demos and runs the one you pick. Each one:
+`menu.sh` lists the eight working demos and runs the one you pick. Each one:
 
-- starts the SDK daemon (via `spawn_daemon=True`)
+- starts the SDK daemon (via manual `reachy-mini-daemon` launch with `spawn_daemon=False`)
 - wakes the robot
 - does its thing
 - goes to sleep
@@ -21,15 +21,18 @@ If something hangs, `Ctrl+C` will trigger `goto_sleep` and stop the daemon. As a
 pkill -9 -f reachy-mini-daemon
 ```
 
-## The five working demos
+## The eight working demos
 
 | # | File | What it does | Expected runtime |
 |---|---|---|---|
-| 1 | `demo1_moves.py` | Nods, shakes, tilts, antenna wiggle | ~12 s |
-| 2 | `demo2_speak.py` | Speaks "Hello! Welcome to Network School" via Piper TTS, with head + antenna animation | ~10 s (depends on speech length) |
-| 3 | `demo3_official_sine.py` | Smooth sine-wave sway (press Ctrl+C to stop) | infinite (or until killed) |
-| 4 | `demo4_official_moves.py` | Plays moves from Pollen's HF dataset. `-d emotions` (default) or `-d dances`. `--full` to play all | ~1 min for 3 moves, ~10 min for all |
-| 5 | `demo5_camera.py` | Snapshots the camera and scans head left/right, capturing frames at each pose | ~8 s |
+| 1 | `demo_welcome.py` | Greeting speech + attentive listening pose | ~25 s |
+| 2 | `demo_dance.py` | Full Macarena performance with beat-synced music | ~30 s |
+| 3 | `demo_face_recognition.py` | Loads known faces from `faces/<name>/`, greets by name, tracks faces in real time | ~90 s (cooldown between greetings) |
+| 4 | `demo_tools7.py` | Conversational LLM with barge-in and parallel gesture picker, fast (~1 s turn-taking) | varies |
+| 5 | `demo_deepseek.py` | Same as demo 4 but uses DeepSeek V4 Flash (deeper thinking, ~15 s latency) | varies |
+| 6 | `demo_instant.py` | Streaming TTS — starts talking ~0.4 s after LLM produces a sentence | varies |
+| 7 | `demo_converse.py` | Instant talk + face ID onboarding + web dashboard at `http://localhost:8080` | varies |
+| 8 | `demo_hackathon.py` | Dual-view tabbed dashboard (`/#stage` projector view + `/#control` operator), kid-friendly | varies |
 
 ## The official examples (also in `demos/`)
 
@@ -52,6 +55,6 @@ Files:
 - `official_imu_example.py` — IMU (Lite has no IMU; will return zeros)
 - `official_custom_media_manager.py` — shows how to plug a custom media backend
 
-## Why my demos use `connection_mode="localhost_only", spawn_daemon=True, media_backend="no_media"`
+## Why my demos use `connection_mode="localhost_only", spawn_daemon=False, media_backend="no_media"`
 
-The defaults assume a Wireless robot on the LAN. The Lite is none of those things — see [SDK_NOTES.md](SDK_NOTES.md).
+The defaults assume a Wireless robot on the LAN. The Lite is none of those things — see [SDK_NOTES.md](SDK_NOTES.md). The `spawn_daemon=False` pattern requires manual daemon startup with `--no-media` flag and a poll loop; see the pattern in [SDK_NOTES.md](SDK_NOTES.md) section 10.

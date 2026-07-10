@@ -40,7 +40,11 @@ from reachy_demo.audio import (
 _READ_STALL_S = 4.0
 
 # ── Default VAD tuning (matches every demo's previous local constants) ─────────
-THRESH_NORMAL   = 0.45   # standard — when robot is silent
+# REACHY_LOUD_ROOM=1 raises the silent-room trigger so distant crowd chatter is
+# less likely to wake the VAD (pair with speech_gate's loud-room preset).
+_LOUD_ROOM = os.environ.get("REACHY_LOUD_ROOM", "").lower() in ("1", "true", "yes", "on")
+
+THRESH_NORMAL   = 0.60 if _LOUD_ROOM else 0.45   # standard — when robot is silent
 THRESH_BARGE_IN = 0.75   # high — when robot is speaking, only real speech counts
 SILENCE_MS      = 700    # silence before an utterance is considered ended
 MIN_SPEECH_S    = 0.30   # shorter than this is dropped (cough / click)
@@ -60,10 +64,14 @@ class ContinuousListener:
                  thresh_normal=THRESH_NORMAL, thresh_barge_in=THRESH_BARGE_IN,
                  silence_ms=SILENCE_MS, min_speech_s=MIN_SPEECH_S,
                  tail_frames=TAIL_FRAMES, barge_in_frames=BARGE_IN_FRAMES,
-                 max_recover=MAX_RECOVER):
+                 max_recover=MAX_RECOVER, state=None):
         self.vad_model = vad_model
         self.q = event_queue
         self.log = log
+        # Optional LiveState — if given, publish per-frame mic energy + speech
+        # state for the dashboard "Tech" tab oscilloscope. None keeps the
+        # listener dependency-free for demos that don't have a dashboard.
+        self.state = state
         self._thresh_normal = thresh_normal
         self._thresh_barge_in = thresh_barge_in
         self._silence_ms = silence_ms
@@ -115,6 +123,18 @@ class ContinuousListener:
         self._threshold_mode = mode
         if mode == "barge_in" and not self._in_speech:
             self._consecutive_triggers = 0
+
+    def set_base_thresholds(self, normal=None, barge_in=None):
+        """Live-update the VAD trigger thresholds (control-panel sound-check).
+
+        The capture loop rebuilds its VADIterator automatically whenever the
+        active threshold changes (see the `vad_iter.threshold` check in _loop),
+        so this only needs to assign the new value(s). Safe to call from another
+        thread — assignment of a float is atomic in CPython."""
+        if normal is not None:
+            self._thresh_normal = float(normal)
+        if barge_in is not None:
+            self._thresh_barge_in = float(barge_in)
 
     def _current_threshold(self) -> float:
         return (self._thresh_barge_in if self._threshold_mode == "barge_in"
@@ -213,6 +233,14 @@ class ContinuousListener:
                     vad_iter = None
                     continue
                 recover_attempts = 0   # got a good frame — reset the recovery counter
+
+                # Publish live mic energy for the dashboard Tech-tab scope. Same
+                # int16-RMS scale as the speech-gate floors, so the operator sees
+                # the signal against the noise-floor line. Cheap (one np pass).
+                if self.state is not None:
+                    _s = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+                    self.state.mic_rms = float(np.sqrt(np.mean(_s * _s))) if _s.size else 0.0
+                    self.state.vad_in_speech = self._in_speech
 
                 if self._muted:
                     # Robot is speaking a cue — discard this audio and reset VAD

@@ -50,11 +50,11 @@ Use `connection_mode="localhost_only"` instead.
 
 ## 5. The SDK's own TTS example needs webrtcsink
 
-`examples/sound_tts.py` from the official repo uses `mini.media.play_sound()` which routes through the GStreamer pipeline. It will fail on the Lite without the plugin. Use a separate `aplay` (see `demos/demo2_speak.py`).
+`examples/sound_tts.py` from the official repo uses `mini.media.play_sound()` which routes through the GStreamer pipeline. It will fail on the Lite without the plugin. Use a separate `aplay` (see `demos/demo_welcome.py` or `demo_dance.py` for examples).
 
 ## 6. Long-running infinite-loop demos don't exit
 
-`examples/minimal_demo.py` (and my `demo3_official_sine.py`) have a `while True:` loop that's only broken by `Ctrl+C`. If you launch them via `timeout` and don't send SIGINT, the script never exits cleanly and the daemon stays running. **Always either:**
+Some upstream examples have a `while True:` loop that's only broken by `Ctrl+C`. If you launch them via `timeout` and don't send SIGINT, the script never exits cleanly and the daemon stays running. **Always either:**
 
 - give them a `timeout 30 ...` wrapper, or
 - press `Ctrl+C` to break out and let `ReachyMini.__exit__` clean up the daemon

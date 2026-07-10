@@ -67,6 +67,30 @@ class LiveState:
     speech_rate: str = "+20%"        # edge-tts rate offset
     energy: float = 1.0              # antenna liveliness 0.0-1.0
 
+    # Audio tuning — live-adjustable from the control panel for an on-site
+    # sound-check. main() overwrites these at startup from the speech_gate /
+    # listener module values (which honour the REACHY_LOUD_ROOM preset), so the
+    # env preset is the starting point and the sliders fine-tune from there.
+    gate_min_rms: float = 120.0      # noise floor: below this a clip is ambient noise
+    gate_min_voiced: float = 0.30    # fraction of frames that must be voiced
+    gate_min_peak: float = 0.75      # required single clearest voiced frame
+    gate_min_dur: float = 0.30       # min clip duration (s) — shorter is a click
+    vad_thresh: float = 0.45         # mic trigger sensitivity (listener THRESH_NORMAL)
+    barge_thresh: float = 0.75       # barge-in trigger while robot speaks (THRESH_BARGE_IN)
+
+    # Tech-audit signal telemetry — drives the dashboard "Tech" tab oscilloscope
+    # and pipeline view. mic_rms/vad_in_speech are written by the listener thread
+    # every audio frame (~33 Hz); the gate_* fields are the last speech-gate
+    # decision, written by the demo loop right after is_real_speech().
+    mic_rms: float = 0.0             # live per-frame mic energy (same scale as gate_min_rms)
+    vad_in_speech: bool = False      # listener is currently inside an utterance
+    gate_rms: float = 0.0            # last gate decision: measured energy
+    gate_voiced: float = 0.0         # last gate decision: voiced-frame ratio
+    gate_peak: float = 0.0           # last gate decision: peak voiced prob
+    gate_dur: float = 0.0            # last gate decision: clip duration (s)
+    gate_ok: bool = True             # last clip passed the gate (vs rejected as noise)
+    gate_reason: str = ""            # why the last clip was rejected ("" if it passed)
+
     # Manual control requests from web UI (demo loop drains these)
     pending_wake: bool = False
     pending_sleep: bool = False
@@ -113,6 +137,20 @@ class LiveState:
             "volume": self.volume,
             "speech_rate": self.speech_rate,
             "energy": self.energy,
+            "gate_min_rms": round(self.gate_min_rms, 1),
+            "gate_min_voiced": round(self.gate_min_voiced, 2),
+            "gate_min_peak": round(self.gate_min_peak, 2),
+            "gate_min_dur": round(self.gate_min_dur, 2),
+            "vad_thresh": round(self.vad_thresh, 2),
+            "barge_thresh": round(self.barge_thresh, 2),
+            "mic_rms": round(self.mic_rms, 1),
+            "vad_in_speech": self.vad_in_speech,
+            "gate_rms": round(self.gate_rms, 1),
+            "gate_voiced": round(self.gate_voiced, 2),
+            "gate_peak": round(self.gate_peak, 2),
+            "gate_dur": round(self.gate_dur, 2),
+            "gate_ok": self.gate_ok,
+            "gate_reason": self.gate_reason,
         }
 
     def request_wake(self):

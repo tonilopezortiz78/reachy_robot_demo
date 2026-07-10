@@ -113,7 +113,7 @@ FUN_FACTS = [
     "Astronauts grow a little taller in space.",
     "Your heart beats about 100,000 times every day.",
     "Adults have 206 bones inside their whole body.",
-    "Sneezes can travel faster than 100 miles per hour.",
+    "A sneeze can shoot out of your nose at about 30 miles per hour!",
     "Your nose can remember about 50,000 different smells.",
     "Fingernails grow faster than toenails.",
     "You blink about 20 times every single minute.",
@@ -125,6 +125,19 @@ FUN_FACTS = [
     "Bananas are berries, but strawberries are not.",
     "The Great Wall of China is thousands of miles long.",
     "Rain forests make their own rain by releasing water.",
+    # ── Network School / hackathon / crypto / robots (our world!) ──────────
+    "A hackathon is a party where people build robots and apps super fast!",
+    "The internet breaks your messages into tiny pieces called packets.",
+    "Wi-Fi sends your videos through invisible radio waves in the air.",
+    "Code is just a list of tiny steps a robot follows one by one.",
+    "The first computer bug was a real moth stuck inside a machine!",
+    "A blockchain is a shared notebook that nobody can secretly erase.",
+    "Crypto uses tricky math puzzles to keep digital coins safe.",
+    "At Network School, people learn and build cool tech together.",
+    "On Saturday hackathon day, teams race to invent something new.",
+    "Robots like me use motors and code instead of muscles and bones.",
+    "A tiny computer chip can hold millions of tiny switches.",
+    "Every website lives on a computer called a server, awake all night.",
 ]
 
 # ── Riddles (riddle <=15 words, answer short) ────────────────────────────────
@@ -159,6 +172,14 @@ JOKES = [
     "What's a computer's favorite snack? Microchips!",
     "Why don't eggs tell jokes? They'd crack each other up!",
     "What do you call a sleeping dinosaur? A dino-snore!",
+    # ── Network School / hackathon / crypto / robots ───────────────────────
+    "Why did the coder bring a ladder to the hackathon? To reach the cloud!",
+    "Why was the robot bad at soccer? It kept kicking up bugs!",
+    "How does the internet say hi? It waves — Wi-Fi!",
+    "What do you call a robot who loves crypto? A bit-bot!",
+    "Why did the computer go to Network School? To make some new friend-servers!",
+    "Why don't robots ever get lost? They always follow the right code!",
+    "What's a hacker's favorite Saturday snack? Micro-chips and cookies!",
 ]
 
 # ── Praise openers using real gesture markers ────────────────────────────────

@@ -221,6 +221,7 @@ def main():
     state = LiveState()  # shared between A and B
     reactor = None
     mini_b = None
+    mini_b_ctx = None   # so the finally's `if mini_b_ctx` can't NameError if __enter__ raises
 
     try:
         mini_b_ctx = ReachyMini(connection_mode="localhost_only",

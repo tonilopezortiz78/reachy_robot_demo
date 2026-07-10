@@ -259,7 +259,10 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None,
 
         # ── Speak the funny line while holding a slight bob ─────────
         if funny_text:
-            wav = synth_to_file(funny_text)
+            try:
+                wav = synth_to_file(funny_text)
+            except Exception:
+                wav = None  # flaky wifi: skip the quip, the dance still finishes
             if wav:
                 play_proc = subprocess.Popen(
                     ["aplay", "-D", SPEAKER, "-q", wav],
@@ -388,7 +391,10 @@ def do_robot_wave(mini, dances, emotions, anim, log=None, funny_text=None,
 
         # ── Speak the funny line ──────────────────────────────
         if funny_text:
-            wav = synth_to_file(funny_text)
+            try:
+                wav = synth_to_file(funny_text)
+            except Exception:
+                wav = None  # flaky wifi: skip the quip, the dance still finishes
             if wav:
                 play_proc = subprocess.Popen(
                     ["aplay", "-D", SPEAKER, "-q", wav],
@@ -512,7 +518,10 @@ def do_happy_hop(mini, dances, emotions, anim, log=None, funny_text=None,
 
         # ── Speak the funny line ──────────────────────────────
         if funny_text:
-            wav = synth_to_file(funny_text)
+            try:
+                wav = synth_to_file(funny_text)
+            except Exception:
+                wav = None  # flaky wifi: skip the quip, the dance still finishes
             if wav:
                 play_proc = subprocess.Popen(
                     ["aplay", "-D", SPEAKER, "-q", wav],

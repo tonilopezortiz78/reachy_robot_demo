@@ -1,29 +1,4 @@
-"""
-reachy_demo/web_stage.py — tabbed web dashboard for the live kids demo.
-
-One website, two tabs, any screen can open either:
-
-    /          — single page with a tab bar:
-      #stage    — big, bold, kid-facing view for the PROJECTOR. Camera feed,
-                  "Reachy hears / thinks / says" live captions, gesture word,
-                  state badge. Pure spectacle, no controls.
-      #control  — operator CONTROL PANEL for the laptop. Wake/sleep/stop,
-                  "make Reachy say this" puppet box, 19 gesture buttons,
-                  Macarena trigger, kid-mode + mute toggles, latency/cost,
-                  roster. Your steering wheel during the show.
-
-    Each screen opens the same URL and clicks its tab (or uses the hash:
-    http://<ip>:8080/#stage on the projector, /#control on the laptop).
-    The chosen tab is saved in localStorage so each browser remembers its view.
-
-Shared infrastructure (same patterns as web_server.py):
-    GET  /video   — MJPEG live stream
-    GET  /status  — JSON snapshot (fallback for when WS is down)
-    WS   /ws      — pushes LiveState snapshot ~8-10x/s on change
-    POST /api/wake | /api/sleep | /api/say | /api/stop | /api/mute
-    POST /api/gesture | /api/dance | /api/kid
-    GET  /api/people — roster from reachy_demo.memory
-"""
+"""reachy_demo/web_stage.py — tabbed web dashboard, split-view stage for projector."""
 
 from __future__ import annotations
 
@@ -40,127 +15,93 @@ if TYPE_CHECKING:
     from reachy_demo.camera import CameraHub
     from reachy_demo.live_state import LiveState
 
-
 GESTURES = [
     "acknowledge", "yes", "no", "thank", "thinking", "curious", "confused",
     "greeting", "celebrate", "proud", "amazed", "love", "laugh", "oops",
     "shy", "surprised", "cheerful", "success", "relief",
 ]
 
-GESTURE_EMOJI = {
-    "acknowledge": "ok", "yes": "YES", "no": "NO", "thank": "TY",
-    "thinking": "hmm", "curious": "see", "confused": "?", "greeting": "HI",
-    "celebrate": "YAY", "proud": "proud", "amazed": "whoa", "love": "love",
-    "laugh": "lol", "oops": "oops", "shy": "shy", "surprised": "!",
-    "cheerful": "yay", "success": "WIN", "relief": "phew", "": "",
-}
-
-_HTML = """<!DOCTYPE html>
+_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Reachy</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%;background:#0a0a0a;color:#fff;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden}
+html,body{height:100%;background:#0a0a0a;color:#fff;font-family:system-ui,sans-serif;overflow:hidden}
 
-/* ── tab bar ── */
-#tabs{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;gap:0;background:#0f172a;border-bottom:2px solid #1e293b}
+#tabs{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;background:#0f172a;border-bottom:2px solid #1e293b}
 #tabs button{flex:1;max-width:200px;padding:10px 20px;background:transparent;border:none;color:#64748b;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:1px;border-bottom:3px solid transparent;transition:.15s}
 #tabs button:hover{color:#94a3b8}
 #tabs button.active{color:#fff;border-bottom-color:#3b82f6;background:#111827}
-
-/* ── view switching ── */
 .view{display:none;height:100vh;padding-top:48px}
 .view.active{display:block}
 
-/* ════════════════════════════════════════════════════════════════
-   STAGE VIEW (projector) — kid-friendly educational dashboard
-   ════════════════════════════════════════════════════════════════ */
-#stage-view{display:none}
-#stage-view.active{display:grid;grid-template-columns:1.5fr 1fr;grid-template-rows:1fr auto;gap:8px;padding:54px 8px 8px;transition:background-color .8s ease}
-#stage-view.speaking{background:linear-gradient(135deg,#0c1445 0%,#0a1a2e 50%,#0c1445 100%)}
-#stage-view.listening{background:linear-gradient(135deg,#0a2e0a 0%,#0a1f0e 50%,#0a2e0a 100%)}
-#stage-view.thinking{background:linear-gradient(135deg,#1f1408 0%,#2a1a06 50%,#1f1408 100%)}
-#stage-view.idle{background:linear-gradient(135deg,#0a0a0a 0%,#111 50%,#0a0a0a 100%)}
-#stage-view.dancing{background:linear-gradient(135deg,#1a0a2e 0%,#2e0a2e 50%,#1a0a2e 100%);animation:party 0.6s ease-in-out infinite}
-@keyframes party{0%,100%{background:linear-gradient(135deg,#1a0a2e,#2e0a2e)}50%{background:linear-gradient(135deg,#2e1a0a,#2e0a1a)}}
-#cam-stage{grid-row:1/3;position:relative;background:#000;border-radius:12px;overflow:hidden;border:2px solid rgba(255,255,255,.1)}
-#cam-stage img{width:100%;height:100%;object-fit:cover}
+/* ═══ STAGE (projector) ═══ */
+#stage-view.active{display:grid;grid-template-columns:3fr 2fr;gap:8px;padding:56px 8px 8px;transition:background .8s}
+#stage-view.speaking{background:linear-gradient(135deg,#0c1445,#0a1a2e,#0c1445)}
+#stage-view.listening{background:linear-gradient(135deg,#0a2e0a,#0a1f0e,#0a2e0a)}
+#stage-view.thinking{background:linear-gradient(135deg,#1f1408,#2a1a06,#1f1408)}
+#stage-view.dancing{background:linear-gradient(135deg,#1a0a2e,#2e0a2e,#1a0a2e)}
+#stage-view.idle{background:linear-gradient(135deg,#0a0a0a,#111,#0a0a0a)}
 
-/* ── Face tracker badges (bottom of camera) ── */
-#tracker-bar{position:absolute;bottom:0;left:0;right:0;display:flex;gap:6px;padding:10px;background:rgba(0,0,0,.7);overflow-x:auto;min-height:50px;align-items:center}
+#cam-box{position:relative;background:#000;border-radius:12px;overflow:hidden;border:2px solid rgba(255,255,255,.1)}
+#cam-box img{width:100%;height:100%;object-fit:cover}
+#state-tag{position:absolute;top:10px;left:10px;padding:6px 16px;border-radius:999px;font-size:1.1rem;font-weight:900;letter-spacing:2px;backdrop-filter:blur(8px);background:rgba(0,0,0,.6);transition:background .3s,box-shadow .3s}
+#state-tag.speaking{background:rgba(59,130,246,.5);box-shadow:0 0 20px rgba(59,130,246,.4)}
+#state-tag.listening{background:rgba(34,197,94,.5);box-shadow:0 0 20px rgba(34,197,94,.4)}
+#state-tag.thinking{background:rgba(245,158,11,.5);box-shadow:0 0 20px rgba(245,158,11,.4)}
+#state-tag.dancing{background:rgba(168,85,247,.5);box-shadow:0 0 20px rgba(168,85,247,.4)}
+#face-bar{position:absolute;bottom:0;left:0;right:0;display:flex;gap:6px;padding:10px;background:rgba(0,0,0,.7);overflow-x:auto;min-height:50px;align-items:center}
 .face-tag{display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:999px;font-size:1.1rem;font-weight:800;white-space:nowrap;flex-shrink:0;animation:popin .3s ease}
 @keyframes popin{from{transform:scale(.5);opacity:0}to{transform:scale(1);opacity:1}}
 .face-tag.known{background:rgba(34,197,94,.3);border:2px solid rgba(34,197,94,.6);color:#bbf7d0}
 .face-tag.visitor{background:rgba(96,165,250,.3);border:2px solid rgba(96,165,250,.6);color:#bfdbfe}
 
-/* ── State badge (top-left of camera) ── */
-#state-badge{position:absolute;top:12px;left:12px;padding:8px 20px;border-radius:999px;font-size:1.2rem;font-weight:900;letter-spacing:2px;backdrop-filter:blur(8px);background:rgba(0,0,0,.6);text-transform:uppercase;transition:background .3s}
-#state-badge.speaking{background:rgba(59,130,246,.5);animation:pulse-bt 1s ease-in-out infinite}
-#state-badge.listening{background:rgba(34,197,94,.5);animation:pulse-bt 1.2s ease-in-out infinite}
-#state-badge.thinking{background:rgba(245,158,11,.5);animation:pulse-bt .8s ease-in-out infinite}
-#state-badge.dancing{background:rgba(168,85,247,.5);animation:pulse-bt .4s ease-in-out infinite}
-@keyframes pulse-bt{0%,100%{box-shadow:0 0 10px currentColor}50%{box-shadow:0 0 30px currentColor,0 0 60px currentColor}}
+/* ── right info panel ── */
+#info{display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.card{background:rgba(255,255,255,.04);border-radius:14px;padding:16px 18px;border:1px solid rgba(255,255,255,.08)}
 
-/* ── Right side: info panels ── */
-#right-panels{display:flex;flex-direction:column;gap:8px;overflow:hidden}
-.info-card{background:rgba(255,255,255,.05);border-radius:14px;padding:16px 18px;border:1px solid rgba(255,255,255,.1);transition:all .4s}
-.info-card h2{font-size:.7rem;text-transform:uppercase;letter-spacing:2px;margin-bottom:8px;opacity:.6}
-
-/* status icon + big text */
-#big-status{min-height:90px;display:flex;align-items:center;gap:16px}
-#big-icon{font-size:3.5rem;animation:float 2s ease-in-out infinite}
+#big-status{display:flex;align-items:center;gap:14px;min-height:90px}
+#big-status .icon{font-size:3.2rem;animation:float 2s ease-in-out infinite}
 @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
-#big-text{font-size:1.6rem;font-weight:800;line-height:1.3;flex:1}
-#big-text .highlight{color:#fbbf24}
-#big-text .small{font-size:.9rem;opacity:.6;font-weight:400;display:block;margin-top:4px}
+#big-status .txt{font-size:1.5rem;font-weight:800;line-height:1.3}
+#big-status .txt .sub{font-size:.85rem;opacity:.5;font-weight:400;display:block;margin-top:4px}
 
-/* speech bubble */
-#speech-bubble{background:rgba(59,130,246,.15);border:2px solid rgba(59,130,246,.4);border-radius:16px;padding:16px 18px;min-height:60px;font-size:1.5rem;font-weight:700;color:#fff;line-height:1.3;display:flex;align-items:center;transition:all .3s}
-#speech-bubble:empty,#speech-bubble.disabled{opacity:.25;min-height:0;padding:10px;font-size:.9rem;color:#64748b}
-#speech-bubble .blink{display:inline-block;width:3px;height:1.6rem;background:#93c5fd;margin-left:4px;animation:bk .8s steps(2) infinite}
-@keyframes bk{50%{opacity:0}}
-#speech-bubble.listening{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.3)}
-#speech-bubble.thinking{background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3)}
+#caption{font-size:1.6rem;font-weight:700;line-height:1.3;min-height:60px;display:flex;align-items:center;transition:all .3s}
+#caption .blink{display:inline-block;width:3px;height:1.6rem;background:currentColor;margin-left:4px;animation:blk .8s steps(2) infinite}
+@keyframes blk{50%{opacity:0}}
+#caption.speaking{color:#bfdbfe}#caption.thinking{color:#fbbf24;font-style:italic}#caption.listening{color:rgba(255,255,255,.3);font-size:1.1rem}#caption.empty{color:rgba(255,255,255,.15);font-size:.9rem}
 
-/* fun fact panel */
-#fun-fact{min-height:40px;font-size:.95rem;color:#94a3b8;line-height:1.4;display:flex;align-items:center;gap:8px}
-#fun-fact .icon{font-size:1.5rem}
+#fact-bar{display:flex;align-items:center;gap:8px;font-size:.9rem;color:#94a3b8;min-height:30px}
+#fact-bar .icon{font-size:1.2rem}
 
-/* faces panel */
-#faces-list{display:flex;gap:6px;flex-wrap:wrap;min-height:30px;align-items:center}
-.face-badge{display:flex;align-items:center;gap:4px;padding:5px 12px;border-radius:999px;font-size:.9rem;font-weight:700;animation:popin .3s ease}
-.face-badge.know{background:rgba(34,197,94,.2);border:1px solid rgba(34,197,94,.5);color:#bbf7d0}
-.face-badge.new{background:rgba(96,165,250,.2);border:1px solid rgba(96,165,250,.5);color:#bfdbfe}
+#face-list{display:flex;gap:6px;flex-wrap:wrap;min-height:28px;align-items:center}
+.f-badge{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:999px;font-size:.85rem;font-weight:700;animation:popin .3s ease}
+.f-badge.know{background:rgba(34,197,94,.2);border:1px solid rgba(34,197,94,.5);color:#bbf7d0}
+.f-badge.new{background:rgba(96,165,250,.2);border:1px solid rgba(96,165,250,.5);color:#bfdbfe}
 
-/* footer */
-#stage-footer{grid-column:2;display:flex;justify-content:space-between;font-size:.7rem;color:#374151;padding:0 4px}
+#stage-foot{display:flex;justify-content:space-between;font-size:.65rem;color:#374151;padding:0 4px}
 
-
-/* ════════════════════════════════════════════════════════════════
-   CONTROL VIEW (operator laptop)
-   ════════════════════════════════════════════════════════════════ */
+/* ═══ CONTROL (laptop) ═══ */
 #control-view.active{display:block;overflow:auto;padding:60px 14px 14px}
-.ctrl-h1{font-size:1.1rem;color:#fff;margin-bottom:12px}
 .ctrl-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;max-width:1400px}
-.card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px}
-.card h2{font-size:.72rem;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin-bottom:10px}
+.cd{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px}
+.cd h2{font-size:.72rem;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin-bottom:10px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
-button.ctrl{background:#334155;color:#e5e7eb;border:1px solid #475569;border-radius:6px;padding:7px 12px;cursor:pointer;font-size:.82rem;font-weight:600;transition:.12s}
-button.ctrl:hover{background:#475569;border-color:#64748b}
-button.ctrl:active{transform:translateY(1px)}
-button.ctrl.danger{background:#7f1d1d;border-color:#991b1b;color:#fecaca}
-button.ctrl.danger:hover{background:#991b1b}
-button.ctrl.go{background:#14532d;border-color:#166534;color:#bbf7d0}
-button.ctrl.go:hover{background:#166534}
-button.ctrl.warn{background:#78350f;border-color:#92400e;color:#fde68a}
-button.ctrl.warn:hover{background:#92400e}
+b{border-radius:6px;padding:7px 12px;cursor:pointer;font-size:.82rem;font-weight:600;border:1px solid;transition:.12s}
+b.df{background:#334155;color:#e5e7eb;border-color:#475569}
+b.df:hover{background:#475569;border-color:#64748b}
+b.go{background:#14532d;border-color:#166534;color:#bbf7d0}
+b.go:hover{background:#166534}
+b.warn{background:#78350f;border-color:#92400e;color:#fde68a}
+b.warn:hover{background:#92400e}
+b.danger{background:#7f1d1d;border-color:#991b1b;color:#fecaca}
+b.danger:hover{background:#991b1b}
 input[type=text]{background:#0f172a;border:1px solid #475569;color:#fff;border-radius:6px;padding:8px 10px;font-size:.9rem;flex:1;min-width:120px}
 input[type=text]:focus{outline:none;border-color:#60a5fa}
 .ggrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
-.ggrid button{padding:6px 4px;font-size:.75rem;text-align:center}
+.ggrid b{padding:6px 4px;font-size:.75rem;text-align:center}
 .stat{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #334155;font-size:.82rem}
 .stat:last-child{border-bottom:none}
 .stat .k{color:#94a3b8}.stat .v{color:#fff;font-weight:600;font-variant-numeric:tabular-nums}
@@ -172,314 +113,472 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
 .person{padding:6px 8px;border-bottom:1px solid #334155}
 .person .n{font-weight:700;color:#fff}.person .f{font-size:.75rem;color:#94a3b8}
 .cam-prev{width:100%;border-radius:8px;border:1px solid #334155;margin-bottom:8px}
-</style>
-</head>
-<body>
+
+/* ═══ TECH (sound-check audit) ═══ */
+#tech-view.active{display:block;overflow:auto;padding:60px 14px 14px}
+#scope-cv{width:100%;height:220px;background:#000;border-radius:8px;display:block}
+#scope-status{font-size:.72rem;color:#94a3b8;margin-top:6px}
+#pipe-strip{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pill{padding:8px 14px;border-radius:10px;background:#334155;border:1px solid #475569;font-size:.78rem;font-weight:700;color:#94a3b8;min-width:90px;text-align:center;transition:.2s}
+.pill.on{background:rgba(34,197,94,.25);border-color:rgba(34,197,94,.6);color:#bbf7d0}
+.pill.off{background:rgba(239,68,68,.25);border-color:rgba(239,68,68,.6);color:#fecaca}
+.pill .sub{display:block;font-size:.65rem;font-weight:400;opacity:.85;margin-top:2px}
+.chev{color:#475569;font-size:1.1rem}
+.chip{padding:2px 8px;border-radius:999px;font-size:.68rem;font-weight:800;margin-left:6px}
+.chip.pass{background:rgba(34,197,94,.2);color:#bbf7d0;border:1px solid rgba(34,197,94,.5)}
+.chip.fail{background:rgba(239,68,68,.2);color:#fecaca;border:1px solid rgba(239,68,68,.5)}
+</style></head><body>
 <div id="tabs">
   <button id="tab-stage" onclick="showTab('stage')">Stage</button>
   <button id="tab-control" onclick="showTab('control')">Control</button>
+  <button id="tab-tech" onclick="showTab('tech')">Tech</button>
 </div>
-
-<!-- ═══ STAGE VIEW ═══ -->
 <div id="stage-view" class="view">
-  <div id="cam-stage">
-    <img id="feed-stage" src="/video" alt="camera" onerror="reconnect('feed-stage')">
-    <div id="state-badge">IDLE</div>
-    <div id="tracker-bar"><span style="color:rgba(255,255,255,.3);font-size:.85rem">waiting for friends</span></div>
+  <div id="cam-box">
+    <img id="feed-s" src="/video" onerror="r('feed-s')">
+    <div id="state-tag">IDLE</div>
+    <div id="face-bar"><span style="color:rgba(255,255,255,.2)">waiting for friends</span></div>
   </div>
-  <div id="right-panels">
-    <div id="big-status" class="info-card">
-      <div id="big-icon">🤖</div>
-      <div id="big-text">Ready!<span class="small">Reachy is waiting to meet you</span></div>
-    </div>
-    <div id="speech-bubble" class="disabled">...</div>
-    <div id="faces-list" class="info-card"><h2>Friends nearby</h2><span style="color:rgba(255,255,255,.3)">come say hello!</span></div>
-    <div id="fun-fact" class="info-card"><span class="icon">💡</span>Reachy's lost brother Pixel vanished one firmware update ago!</div>
+  <div id="info">
+    <div id="big-status" class="card"><div class="icon" id="big-icon">🤖</div><div class="txt" id="big-txt">Ready!<span class="sub">Reachy is waiting to meet you</span></div></div>
+    <div id="caption" class="card empty">...</div>
+    <div id="fact-bar" class="card"><span class="icon">💡</span><span id="fact-txt">Reachy wants arms and legs someday!</span></div>
+    <div id="face-list" class="card"><span style="color:rgba(255,255,255,.2)">come say hello!</span></div>
   </div>
-  <div id="stage-footer"><span>Network School</span><span>Reachy Mini · <span id="s-lang-stage">-</span></span></div>
+  <div id="stage-foot"><span>Network School</span><span>Reachy Mini · <span id="s-lang">-</span></span></div>
 </div>
-
-<!-- ═══ CONTROL VIEW ═══ -->
 <div id="control-view" class="view">
-  <h1 class="ctrl-h1">Reachy Control Panel</h1>
+  <h1 style="font-size:1.1rem;color:#fff;margin-bottom:12px">Reachy Control Panel</h1>
   <div class="ctrl-grid">
-    <div class="card">
+    <div class="cd">
       <h2>Commands</h2>
       <div class="row">
-        <button class="ctrl go" onclick="post('/api/wake')">Wake</button>
-        <button class="ctrl warn" onclick="post('/api/sleep')">Sleep</button>
-        <button class="ctrl danger" onclick="post('/api/stop')">Stop demo</button>
+        <b class="go" onclick="P('/api/wake')">Wake</b>
+        <b class="warn" onclick="P('/api/sleep')">Sleep</b>
+        <b class="danger" onclick="P('/api/stop')">Stop</b>
       </div>
       <div class="row">
-        <label class="toggle" id="kid-toggle"><div class="sw"></div><span>Kid mode</span></label>
-        <label class="toggle" id="mute-toggle"><div class="sw"></div><span>Mute</span></label>
+        <label class="toggle" id="kid-t"><div class="sw"></div><span>Kid mode</span></label>
+        <label class="toggle" id="mute-t"><div class="sw"></div><span>Mute</span></label>
       </div>
       <h2 style="margin-top:14px">Make Reachy say</h2>
-      <div class="row">
-        <input type="text" id="say-text" placeholder="Type a line, Enter to fire" onkeydown="if(event.key==='Enter')doSay()">
-        <button class="ctrl go" onclick="doSay()">Say</button>
-      </div>
+      <div class="row"><input type="text" id="say-i" placeholder="Type a line, Enter to fire" onkeydown="if(event.key==='Enter')S()"><b class="go" onclick="S()">Say</b></div>
     </div>
-    <div class="card">
-      <h2>Gestures (19) - tap to trigger</h2>
-      <div class="ggrid" id="gesture-grid"></div>
+    <div class="cd">
+      <h2>Gestures (19)</h2>
+      <div class="ggrid" id="g-grid"></div>
       <h2 style="margin-top:14px">Dances</h2>
-      <div class="row" id="dance-buttons"></div>
+      <div class="row" id="d-grid"></div>
     </div>
-    <div class="card">
+    <div class="cd">
       <h2>Camera</h2>
       <img class="cam-prev" src="/video" onerror="this.src='/video?t='+Date.now()">
       <h2>Status</h2>
-      <div class="stat"><span class="k">Robot</span><span class="v" id="s-robot">-</span></div>
-      <div class="stat"><span class="k">State</span><span class="v" id="s-state">-</span></div>
-      <div class="stat"><span class="k">Gesture</span><span class="v" id="s-gesture">-</span></div>
-      <div class="stat"><span class="k">Faces</span><span class="v" id="s-faces">0</span></div>
-      <div class="stat"><span class="k">Known</span><span class="v" id="s-known">0</span></div>
-      <div class="stat"><span class="k">Lang</span><span class="v" id="s-lang">-</span></div>
-      <div class="stat"><span class="k">Turn</span><span class="v" id="s-turn">0</span></div>
-      <div class="stat"><span class="k">Uptime</span><span class="v" id="s-up">0s</span></div>
+      <div class="stat"><span class="k">Robot</span><span class="v" id="c-rob">-</span></div>
+      <div class="stat"><span class="k">State</span><span class="v" id="c-st">-</span></div>
+      <div class="stat"><span class="k">Faces</span><span class="v" id="c-fc">0</span></div>
+      <div class="stat"><span class="k">Known</span><span class="v" id="c-kn">0</span></div>
+      <div class="stat"><span class="k">Lang</span><span class="v" id="c-lg">-</span></div>
+      <div class="stat"><span class="k">Turn</span><span class="v" id="c-tn">0</span></div>
+      <div class="stat"><span class="k">Uptime</span><span class="v" id="c-up">0s</span></div>
     </div>
-    <div class="card">
-      <h2>Latency (last turn)</h2>
-      <div class="stat"><span class="k">STT</span><span class="v" id="s-stt">-</span></div>
-      <div class="stat"><span class="k">LLM TTF</span><span class="v" id="s-ttf">-</span></div>
-      <div class="stat"><span class="k">TTS TTA</span><span class="v" id="s-tta">-</span></div>
-      <div class="stat"><span class="k">Provider</span><span class="v" id="s-prov">-</span></div>
-      <div class="stat"><span class="k">Model</span><span class="v" id="s-model">-</span></div>
+    <div class="cd">
+      <h2>Latency</h2>
+      <div class="stat"><span class="k">STT</span><span class="v" id="c-stt">-</span></div>
+      <div class="stat"><span class="k">LLM TTF</span><span class="v" id="c-ttf">-</span></div>
+      <div class="stat"><span class="k">TTS TTA</span><span class="v" id="c-tta">-</span></div>
+      <div class="stat"><span class="k">Provider</span><span class="v" id="c-prv">-</span></div>
+      <div class="stat"><span class="k">Model</span><span class="v" id="c-mod">-</span></div>
     </div>
-    <div class="card">
-      <h2>Tokens and cost</h2>
-      <div class="stat"><span class="k">Tokens in</span><span class="v" id="s-tin">0</span></div>
-      <div class="stat"><span class="k">Tokens out</span><span class="v" id="s-tout">0</span></div>
-      <div class="stat"><span class="k">Est. cost</span><span class="v" id="s-cost">$0.00</span></div>
-      <div class="stat"><span class="k">Last user</span><span class="v" id="s-user" style="font-size:.75rem;text-align:right;max-width:60%">-</span></div>
-      <div class="stat"><span class="k">Last reply</span><span class="v" id="s-reply" style="font-size:.75rem;text-align:right;max-width:60%">-</span></div>
+    <div class="cd">
+      <h2>Tokens &amp; cost</h2>
+      <div class="stat"><span class="k">In</span><span class="v" id="c-ti">0</span></div>
+      <div class="stat"><span class="k">Out</span><span class="v" id="c-to">0</span></div>
+      <div class="stat"><span class="k">Cost</span><span class="v" id="c-co">$0</span></div>
+      <div class="stat"><span class="k">Last user</span><span class="v" id="c-lu" style="font-size:.7rem;max-width:60%">-</span></div>
+      <div class="stat"><span class="k">Last reply</span><span class="v" id="c-lr" style="font-size:.7rem;max-width:60%">-</span></div>
     </div>
-    <div class="card">
-      <h2>Enrolled people</h2>
-      <div class="people" id="people">loading...</div>
-    </div>
-    <div class="card">
-      <h2>Audio and energy</h2>
+    <div class="cd">
+      <h2>Audio &amp; energy</h2>
       <div class="stat"><span class="k">Volume</span><span class="v" id="s-vol">2.5</span></div>
-      <input type="range" id="vol-slider" min="0" max="5" step="0.1" value="2.5" style="width:100%;margin-bottom:10px" oninput="debVol(this.value)">
-      <div class="stat"><span class="k">Speech rate</span><span class="v" id="s-rate">+20%</span></div>
-      <input type="range" id="rate-slider" min="-30" max="50" step="5" value="20" style="width:100%;margin-bottom:10px" oninput="debRate(this.value)">
-      <div class="stat"><span class="k">Antenna energy</span><span class="v" id="s-energy">1.0</span></div>
-      <input type="range" id="energy-slider" min="0" max="1" step="0.1" value="1" style="width:100%">
+      <input type="range" id="vol-sl" min="0" max="5" step=".1" value="2.5" style="width:100%;margin-bottom:8px" oninput="dV('vol',this.value)">
+      <div class="stat"><span class="k">Rate</span><span class="v" id="s-rate">+20%</span></div>
+      <input type="range" id="rate-sl" min="-30" max="50" step="5" value="20" style="width:100%;margin-bottom:8px" oninput="dV('rate',this.value)">
+      <div class="stat"><span class="k">Energy</span><span class="v" id="s-ene">1.0</span></div>
+      <input type="range" id="ene-sl" min="0" max="1" step=".1" value="1" style="width:100%">
+    </div>
+    <div class="cd">
+      <h2>Audio tuning (sound-check)</h2>
+      <div style="font-size:.72rem;color:#94a3b8;margin-bottom:8px">Higher = ignore background chatter (do a 30s sound-check)</div>
+      <div class="stat"><span class="k">Noise floor</span><span class="v" id="s-rms">120</span></div>
+      <input type="range" id="rms-sl" min="0" max="2000" step="10" value="120" style="width:100%;margin-bottom:8px" oninput="dA('rms',this.value)">
+      <div class="stat"><span class="k">Voiced ratio</span><span class="v" id="s-voi">.30</span></div>
+      <input type="range" id="voi-sl" min="0" max="1" step=".01" value=".30" style="width:100%;margin-bottom:8px" oninput="dA('voi',this.value)">
+      <div class="stat"><span class="k">Voice peak</span><span class="v" id="s-pk">.75</span></div>
+      <input type="range" id="pk-sl" min="0" max="1" step=".01" value=".75" style="width:100%;margin-bottom:8px" oninput="dA('pk',this.value)">
+      <div class="stat"><span class="k">Min duration</span><span class="v" id="s-dur">.30</span></div>
+      <input type="range" id="dur-sl" min="0" max="1.5" step=".05" value=".30" style="width:100%;margin-bottom:8px" oninput="dA('dur',this.value)">
+      <div class="stat"><span class="k">Mic trigger</span><span class="v" id="s-vad">.45</span></div>
+      <input type="range" id="vad-sl" min="0.1" max="0.95" step=".01" value=".45" style="width:100%;margin-bottom:8px" oninput="dA('vad',this.value)">
+      <div class="stat"><span class="k">Barge-in</span><span class="v" id="s-brg">.75</span></div>
+      <input type="range" id="brg-sl" min="0.1" max="0.95" step=".01" value=".75" style="width:100%" oninput="dA('brg',this.value)">
+    </div>
+    <div class="cd">
+      <h2>Enrolled people</h2>
+      <div class="people" id="ppl">loading...</div>
     </div>
   </div>
 </div>
-
+<div id="tech-view" class="view">
+  <h1 style="font-size:1.1rem;color:#fff;margin-bottom:12px">Audio Pipeline Tech Audit</h1>
+  <div class="cd" style="margin-bottom:12px">
+    <h2>Oscilloscope</h2>
+    <canvas id="scope-cv"></canvas>
+    <div id="scope-status">connecting...</div>
+  </div>
+  <div class="cd" style="margin-bottom:12px">
+    <h2>Pipeline</h2>
+    <div id="pipe-strip">
+      <div class="pill on" id="p-mic"><div>MIC</div><span class="sub" id="p-mic-v">-</span></div>
+      <span class="chev">&#8250;</span>
+      <div class="pill" id="p-vad"><div>VAD</div><span class="sub" id="p-vad-v">-</span></div>
+      <span class="chev">&#8250;</span>
+      <div class="pill" id="p-gate"><div>GATE</div><span class="sub" id="p-gate-v">-</span></div>
+      <span class="chev">&#8250;</span>
+      <div class="pill" id="p-stt"><div>STT</div><span class="sub" id="p-stt-v">-</span></div>
+      <span class="chev">&#8250;</span>
+      <div class="pill" id="p-llm"><div>LLM</div><span class="sub" id="p-llm-v">-</span></div>
+      <span class="chev">&#8250;</span>
+      <div class="pill" id="p-tts"><div>TTS</div><span class="sub" id="p-tts-v">-</span></div>
+    </div>
+  </div>
+  <div class="ctrl-grid">
+    <div class="cd">
+      <h2>Last gate decision</h2>
+      <div id="gate-headline" style="font-weight:800;font-size:1rem;margin-bottom:8px">-</div>
+      <div class="stat"><span class="k">Energy / RMS</span><span class="v"><span id="g-rms">-</span><span class="chip" id="g-rms-c">-</span></span></div>
+      <div class="stat"><span class="k">Voiced ratio</span><span class="v"><span id="g-voi">-</span><span class="chip" id="g-voi-c">-</span></span></div>
+      <div class="stat"><span class="k">Voice peak</span><span class="v"><span id="g-pk">-</span><span class="chip" id="g-pk-c">-</span></span></div>
+      <div class="stat"><span class="k">Duration</span><span class="v"><span id="g-dur">-</span><span class="chip" id="g-dur-c">-</span></span></div>
+    </div>
+    <div class="cd">
+      <h2>Last turn</h2>
+      <div class="stat"><span class="k">Language</span><span class="v" id="t-lang">-</span></div>
+      <div class="stat"><span class="k">Last heard</span><span class="v" id="t-lu" style="font-size:.7rem;max-width:60%">-</span></div>
+      <div class="stat"><span class="k">Last reply</span><span class="v" id="t-lr" style="font-size:.7rem;max-width:60%">-</span></div>
+      <div class="stat"><span class="k">STT</span><span class="v" id="t-stt">-</span></div>
+      <div class="stat"><span class="k">LLM TTF</span><span class="v" id="t-ttf">-</span></div>
+      <div class="stat"><span class="k">TTS TTA</span><span class="v" id="t-tta">-</span></div>
+    </div>
+  </div>
+</div>
 <script>
+"use strict";
 const $=id=>document.getElementById(id);
-const G_E=__G_E__;
-const GESTURES=__GESTURES__;
-const STATE_C={idle:'#4b5563',listening:'#22c55e',thinking:'#f59e0b',speaking:'#3b82f6'};
-const STATE_L={idle:'IDLE',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'};
+const G=__GESTURES__;
+const K={idle:'IDLE',listening:'Listening',thinking:'Thinking',speaking:'Speaking',dancing:'Dancing'};
+const I={idle:'💤',listening:'👂',thinking:'🧠',speaking:'💬',dancing:'🕺'};
+const M={idle:'Ready!',listening:'Listening!',thinking:'Thinking...',speaking:'Speaking!',dancing:'Dancing!'};
+const F=['Reachy wants arms and legs someday!','Reachy lost brother Pixel vanished one firmware update ago!','Network School has 2,000+ members from 80+ countries!','Reachy can speak ANY language — try it!','Reachy antennas are like little hands waving hello!'];
 
-/* ── tab switching ── */
-function showTab(name){
+const TABS=['stage','control','tech'];
+function showTab(n){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-  $('stage-view').classList.toggle('active',name==='stage');
-  $('control-view').classList.toggle('active',name==='control');
-  $('tab-stage').classList.toggle('active',name==='stage');
-  $('tab-control').classList.toggle('active',name==='control');
-  localStorage.setItem('reachy-tab',name);
+  $(n+'-view').classList.add('active');
+  TABS.forEach(t=>$('tab-'+t).classList.toggle('active',t===n));
+  localStorage.setItem('r-tab',n);
 }
-function initTab(){
-  const hash=location.hash.replace('#','');
-  const saved=localStorage.getItem('reachy-tab')||'control';
-  showTab(hash==='stage'||hash==='control'?hash:saved);
-}
-window.addEventListener('hashchange',initTab);
-initTab();
+(function(){
+  const h=location.hash.replace('#','');
+  const s=localStorage.getItem('r-tab')||'control';
+  showTab(TABS.includes(h)?h:s);
+})();
+window.addEventListener('hashchange',()=>{const h=location.hash.replace('#','');showTab(TABS.includes(h)?h:'control');});
 
-/* ── camera reconnect ── */
-function reconnect(id){const el=$(id);setTimeout(()=>{el.src='/video?t='+Date.now();},1500);}
+function r(id){const el=$(id);setTimeout(()=>{el.src='/video?t='+Date.now();},1500);}
 
-/* ── websocket ── */
-let ws=null;
-function connect(){
+let ws;function W(){
   ws=new WebSocket('ws://'+location.host+'/ws');
-  ws.onmessage=e=>render(JSON.parse(e.data));
-  ws.onclose=()=>setTimeout(connect,1500);
-  ws.onerror=()=>ws.close();
-}
-connect();
+  ws.onmessage=e=>{try{R(JSON.parse(e.data));}catch(err){console.error('render',err);}};
+  ws.onclose=()=>setTimeout(W,1500);ws.onerror=()=>ws.close();
+}W();
 
-/* ── render (stage + control) ── */
-let lastAnim='idle',lastSpeech='',lastFaceN='',factT=0,factI=0;
-function esc(t){return String(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-const ICON_EMOJI={idle:'💤',listening:'👂',thinking:'🧠',speaking:'💬',dancing:'🕺'};
-const STATUS=[{idle:'Ready!',sub:'Reachy is waiting to meet you'},{listening:'Listening!',sub:'Reachy hears you...'},{thinking:'Thinking...',sub:'Reachy is figuring it out!'},{speaking:'Speaking!',sub:'Reachy is replying now'},{dancing:'Dancing!',sub:'Reachy is grooving!'}];
-const FACTS=['Reachy wants arms and legs someday!','Reachy\'s lost brother Pixel vanished one firmware update ago!','Network School has 2,000+ members from 80+ countries!','Reachy can speak ANY language — try it!','Reachy\'s antennas are like little hands waving hello!','Build the next Harvard, don\'t just attend it!','Reachy runs at 136 BPM dancing Happy Hop!','Reachy remembers you — say your name!','Reachy dreams of starting an NS Robotics Club!'];
-function render(s){
+let scopeWs,scopeBuf=[],scopeConnected=false;
+function connectScope(){
+  scopeWs=new WebSocket('ws://'+location.host+'/scope');
+  scopeWs.onopen=()=>{scopeConnected=true;$('scope-status').textContent='live';};
+  scopeWs.onmessage=e=>{
+    try{
+      const d=JSON.parse(e.data);
+      scopeBuf.push(d);
+      if(scopeBuf.length>300)scopeBuf.shift();
+    }catch(err){console.error('scope',err);}
+  };
+  scopeWs.onclose=()=>{scopeConnected=false;$('scope-status').textContent='reconnecting…';setTimeout(connectScope,1500);};
+  scopeWs.onerror=()=>scopeWs.close();
+}
+connectScope();
+
+function drawScope(){
+  requestAnimationFrame(drawScope);
+  const cv=$('scope-cv');
+  if(!cv)return;
+  if(cv.clientWidth&&cv.width!==cv.clientWidth){cv.width=cv.clientWidth;cv.height=220;}
+  const ctx=cv.getContext('2d');
+  const w=cv.width,h=cv.height;
+  if(!w||!h)return;
+  ctx.fillStyle='#000';ctx.fillRect(0,0,w,h);
+  if(!scopeBuf.length){
+    ctx.fillStyle='#475569';ctx.font='13px system-ui,sans-serif';
+    ctx.fillText(scopeConnected?'waiting for signal…':'reconnecting…',10,h/2);
+    return;
+  }
+  const n=scopeBuf.length;
+  const N=300;
+  const xw=w/N;
+  let peak=0;for(let i=0;i<n;i++)peak=Math.max(peak,scopeBuf[i].rms||0);
+  const ymax=Math.max(1500,peak*1.2);
+  const floor=scopeBuf[n-1].floor||0;
+
+  // in-speech shading + trigger markers
+  let prev=false;
+  for(let i=0;i<n;i++){
+    const d=scopeBuf[i];
+    const x=w-(n-i)*xw;
+    if(d.in_speech){ctx.fillStyle='rgba(34,197,94,.15)';ctx.fillRect(x,0,xw+1,h);}
+    if(d.in_speech&&!prev){
+      ctx.strokeStyle='#4ade80';ctx.lineWidth=2;
+      ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();
+      ctx.fillStyle='#4ade80';ctx.font='bold 11px system-ui,sans-serif';
+      ctx.fillText('▲ TRIGGER',Math.max(2,Math.min(x+4,w-80)),14);
+    }
+    prev=d.in_speech;
+  }
+
+  // noise-floor line
+  const floorY=h-Math.min(1,floor/ymax)*h;
+  ctx.strokeStyle='#ef4444';ctx.lineWidth=1;ctx.setLineDash([4,3]);
+  ctx.beginPath();ctx.moveTo(0,floorY);ctx.lineTo(w,floorY);ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle='#ef4444';ctx.font='11px system-ui,sans-serif';
+  ctx.fillText('noise floor '+Math.round(floor),6,Math.max(12,floorY-4));
+
+  // rms trace
+  ctx.strokeStyle='#60a5fa';ctx.lineWidth=2;ctx.beginPath();
+  for(let i=0;i<n;i++){
+    const d=scopeBuf[i];
+    const x=w-(n-i)*xw;
+    const y=h-Math.min(1,(d.rms||0)/ymax)*h;
+    if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+
+  // current RMS readout
+  const last=scopeBuf[n-1];
+  ctx.fillStyle='#bfdbfe';ctx.font='bold 13px system-ui,sans-serif';
+  ctx.fillText('RMS '+Math.round(last.rms||0),Math.max(4,w-110),16);
+}
+requestAnimationFrame(drawScope);
+
+let ls='',lsp='',lfn='',ft=0,fi=0,kid=true,mute=false,vd=false,rd=false,ed=false;
+let rmsd=false,void_=false,pkd=false,durd=false,vadd=false,brgd=false;
+
+function R(s){
   const st=s.anim_state||'idle';
   const sv=$('stage-view');
   sv.className='view'+(sv.classList.contains('active')?' active':'')+' '+st;
-  // state badge
-  const badge=$('state-badge');
-  badge.textContent=({idle:'IDLE',listening:'Listening',thinking:'Thinking',speaking:'Speaking',dancing:'Dancing'})[st]||st;
-  badge.className=st;
-  // big icon + message
-  const msgs={idle:'Ready!',listening:'Listening!',thinking:'Thinking...',speaking:'Speaking!',dancing:'Dancing!'};
-  const subs={idle:'Reachy is ready',listening:'Reachy hears you',thinking:'Reachy is thinking',speaking:'Reachy is replying',dancing:'Party time!'};
-  $('big-icon').textContent={idle:'💤',listening:'👂',thinking:'🧠',speaking:'💬',dancing:'🕺'}[st]||'🤖';
-  $('big-text').innerHTML=msgs[st]+'<span class="small">'+subs[st]+'</span>';
-  // speech bubble
-  const sp=$('speech-bubble');
-  const speech=s.current_speech||'';
-  if(speech&&speech!==lastSpeech){
-    sp.className='speaking';sp.innerHTML=esc(speech)+'<span class="blink"></span>';lastSpeech=speech;
-  }else if(!speech&&s.llm_partial){
-    sp.className='thinking';sp.innerHTML='<span style="color:#fbbf24;font-style:italic">'+esc(s.llm_partial.slice(-100))+'...</span>';lastSpeech='';
-  }else if(!speech&&st==='listening'){
-    sp.className='listening';sp.innerHTML='<span style="color:rgba(255,255,255,.35)">Say something! Reachy can hear you...</span>';lastSpeech='';
-  }else if(!speech){
-    sp.className='disabled';sp.innerHTML='...';lastSpeech='';
+  $('state-tag').textContent=K[st]||st;
+  $('state-tag').className=st;
+  $('big-icon').textContent=I[st]||'🤖';
+  $('big-txt').innerHTML=M[st]+'<span class="sub">'+
+    {idle:'Reachy is ready to meet you',listening:'Reachy hears you — talk to me!',thinking:'Reachy is figuring it out...',speaking:'Reachy is replying now!',dancing:'Party time!'}[st]+'</span>';
+
+  const sp=s.current_speech||'';
+  const cp=$('caption');
+  if(sp&&sp!==lsp){
+    cp.className='card speaking';cp.innerHTML=esc(sp)+'<span class="blink"></span>';lsp=sp;
+  }else if(!sp&&s.llm_partial){
+    cp.className='card thinking';cp.innerHTML=esc(s.llm_partial.slice(-100))+'...';lsp='';
+  }else if(!sp&&st==='listening'){
+    cp.className='card listening';cp.innerHTML='Say something! Reachy can hear you...';lsp='';
+  }else if(!sp){
+    cp.className='card empty';cp.innerHTML='...';lsp='';
   }
-  // faces list
-  const fl=$('faces-list');
-  const fc=s.faces_visible||0;
-  if(fc>0&&s.last_face_name&&s.last_face_name!=='-'&&s.last_face_conf>0.45){
-    fl.innerHTML='<h2>Friends nearby</h2><div class="face-badge know">👋 '+esc(s.last_face_name)+'</div>'+(fc>1?'<div class="face-badge new">+'+String(fc-1)+' more</div>':'');
-  }else if(fc>0){
-    fl.innerHTML='<h2>Friends nearby</h2><div class="face-badge new">👀 '+fc+' person(s) nearby</div>';
-  }else{
-    fl.innerHTML='<h2>Friends nearby</h2><span style="color:rgba(255,255,255,.25)">come say hello!</span>';
-  }
-  // face tracker bar
-  if(fc>0&&s.last_face_name&&s.last_face_name!=='-'&&s.last_face_conf>0.45&&s.last_face_name!==lastFaceN){
-    $('tracker-bar').innerHTML='<div class="face-tag known">👋 '+esc(s.last_face_name)+'</div>'+(fc>1?'<div class="face-tag visitor">+'+String(fc-1)+'</div>':'');
-    lastFaceN=s.last_face_name;
-  }else if(fc===0&&lastFaceN!==''){
-    $('tracker-bar').innerHTML='<span style="color:rgba(255,255,255,.25);font-size:.85rem">waiting for friends</span>';
-    lastFaceN='';
-  }
-  // fun fact rotator (every 7s)
+
   const n=Date.now();
-  if(n-factT>7000){factI=(factI+1)%FACTS.length;factT=n;$('fun-fact').innerHTML='<span class="icon">💡</span>'+FACTS[factI];}
-  // lang
-  $('s-lang-stage').textContent=s.current_lang||'-';
-  // === control panel fields ===
-  $('s-robot').textContent=s.robot_online?'online':'offline';
-  $('s-robot').style.color=s.robot_online?'#bbf7d0':'#fca5a5';
-  $('s-state').textContent=s.anim_state;
-  $('s-gesture').textContent=s.current_gesture||'-';
-  $('s-faces').textContent=s.faces_visible;
-  $('s-known').textContent=s.known_person_count;
-  $('s-lang').textContent=s.current_lang;
-  $('s-turn').textContent=s.turn_count;
-  $('s-up').textContent=Math.round(s.uptime_s)+'s';
-  $('s-stt').textContent=fmt(s.stt_s);
-  $('s-ttf').textContent=fmt(s.llm_ttf_s);
-  $('s-tta').textContent=fmt(s.tts_tta_s);
-  $('s-prov').textContent=s.llm_provider;
-  $('s-model').textContent=s.llm_model||'-';
-  $('s-tin').textContent=s.tokens_in;
-  $('s-tout').textContent=s.tokens_out;
-  $('s-cost').textContent='$'+s.est_cost_usd.toFixed(4);
-  $('s-user').textContent=s.last_user||'-';
-  $('s-reply').textContent=s.last_reply||'-';
-  setToggle($('kid-toggle'),s.kid_mode);
-  setToggle($('mute-toggle'),s.muted);
-  // sliders (only update from state if user isn't dragging)
-  if(!volDragging){$('vol-slider').value=s.volume;$('s-vol').textContent=s.volume.toFixed(1);}
-  if(!rateDragging){$('rate-slider').value=parseInt(s.speech_rate)||20;$('s-rate').textContent=s.speech_rate;}
-  if(!energyDragging){$('energy-slider').value=s.energy;$('s-energy').textContent=s.energy.toFixed(1);}
-  // people roster refetch when count changes
-  if(s.known_person_count!==lastPeopleCount){lastPeopleCount=s.known_person_count;fetchPeople();}
+  if(n-ft>7000){fi=(fi+1)%F.length;ft=n;$('fact-txt').textContent=F[fi];}
+
+  const fc=s.faces_visible||0;
+  const fn=s.last_face_name||'-';
+  if(fc>0&&fn!=='-'&&s.last_face_conf>0.45){
+    $('face-list').innerHTML='<div class="f-badge know">👋 '+esc(fn)+'</div>'+(fc>1?'<div class="f-badge new">+'+String(fc-1)+' more</div>':'');
+  }else if(fc>0){
+    $('face-list').innerHTML='<div class="f-badge new">👀 '+fc+' person(s) nearby</div>';
+  }else{$('face-list').innerHTML='<span style="color:rgba(255,255,255,.2)">come say hello!</span>';}
+
+  if(fc>0&&fn!=='-'&&s.last_face_conf>0.45&&fn!==lfn){
+    $('face-bar').innerHTML='<div class="face-tag known">👋 '+esc(fn)+'</div>'+(fc>1?'<div class="face-tag visitor">+'+String(fc-1)+'</div>':'');
+    lfn=fn;
+  }else if(fc===0&&lfn!==''){$('face-bar').innerHTML='<span style="color:rgba(255,255,255,.2)">waiting for friends</span>';lfn='';}
+
+  $('s-lang').textContent=s.current_lang||'-';
+
+  $('c-rob').textContent=s.robot_online?'online':'offline';$('c-rob').style.color=s.robot_online?'#bbf7d0':'#fca5a5';
+  $('c-st').textContent=s.anim_state;$('c-fc').textContent=fc;$('c-kn').textContent=s.known_person_count;
+  $('c-lg').textContent=s.current_lang;$('c-tn').textContent=s.turn_count;
+  $('c-up').textContent=Math.round(s.uptime_s)+'s';
+  $('c-stt').textContent=(s.stt_s>0?s.stt_s.toFixed(2)+'s':'-');
+  $('c-ttf').textContent=(s.llm_ttf_s>0?s.llm_ttf_s.toFixed(2)+'s':'-');
+  $('c-tta').textContent=(s.tts_tta_s>0?s.tts_tta_s.toFixed(2)+'s':'-');
+  $('c-prv').textContent=s.llm_provider;$('c-mod').textContent=s.llm_model||'-';
+  $('c-ti').textContent=s.tokens_in;$('c-to').textContent=s.tokens_out;
+  $('c-co').textContent='$'+s.est_cost_usd.toFixed(4);
+  $('c-lu').textContent=s.last_user||'-';$('c-lr').textContent=s.last_reply||'-';
+
+  kid=s.kid_mode;T('kid-t',kid);mute=s.muted;T('mute-t',mute);
+  if(!vd){$('vol-sl').value=s.volume;$('s-vol').textContent=s.volume.toFixed(1);}
+  if(!rd){$('rate-sl').value=parseInt(s.speech_rate)||20;$('s-rate').textContent=s.speech_rate;}
+  if(!ed){$('ene-sl').value=s.energy;$('s-ene').textContent=s.energy.toFixed(1);}
+  if(!rmsd){$('rms-sl').value=s.gate_min_rms;$('s-rms').textContent=Math.round(s.gate_min_rms);}
+  if(!void_){$('voi-sl').value=s.gate_min_voiced;$('s-voi').textContent=s.gate_min_voiced.toFixed(2);}
+  if(!pkd){$('pk-sl').value=s.gate_min_peak;$('s-pk').textContent=s.gate_min_peak.toFixed(2);}
+  if(!durd){$('dur-sl').value=s.gate_min_dur;$('s-dur').textContent=s.gate_min_dur.toFixed(2);}
+  if(!vadd){$('vad-sl').value=s.vad_thresh;$('s-vad').textContent=s.vad_thresh.toFixed(2);}
+  if(!brgd){$('brg-sl').value=s.barge_thresh;$('s-brg').textContent=s.barge_thresh.toFixed(2);}
+  if(s.known_person_count!==lp){lp=s.known_person_count;H();}
+
+  // ── Tech tab: pipeline strip, gate metrics, last-turn readout ──
+  // (elements always exist in the DOM even when Tech isn't the active tab, so
+  // updating them here unconditionally is a safe no-op the rest of the time.)
+  $('p-mic-v').textContent=Math.round(s.mic_rms||0);
+  const vadOn=!!s.vad_in_speech;
+  $('p-vad').className='pill'+(vadOn?' on':'');
+  $('p-vad-v').textContent='thr '+(typeof s.vad_thresh==='number'?s.vad_thresh.toFixed(2):'-');
+  const gateOk=!!s.gate_ok;
+  $('p-gate').className='pill'+(gateOk?' on':(s.gate_reason?' off':''));
+  $('p-gate-v').textContent=gateOk?'OK':(s.gate_reason||'-');
+  $('p-stt').className='pill'+(s.stt_s>0?' on':'');
+  $('p-stt-v').textContent=s.stt_s>0?s.stt_s.toFixed(2)+'s':'-';
+  $('p-llm').className='pill'+(s.llm_ttf_s>0?' on':'');
+  $('p-llm-v').textContent=s.llm_ttf_s>0?s.llm_ttf_s.toFixed(2)+'s':'-';
+  $('p-tts').className='pill'+(s.tts_tta_s>0?' on':'');
+  $('p-tts-v').textContent=s.tts_tta_s>0?s.tts_tta_s.toFixed(2)+'s':'-';
+
+  gateRow('g-rms','g-rms-c',s.gate_rms,s.gate_min_rms);
+  gateRow('g-voi','g-voi-c',s.gate_voiced,s.gate_min_voiced);
+  gateRow('g-pk','g-pk-c',s.gate_peak,s.gate_min_peak);
+  gateRow('g-dur','g-dur-c',s.gate_dur,s.gate_min_dur);
+  const gh=$('gate-headline');
+  gh.textContent=gateOk?'PASSED':'REJECTED: '+(s.gate_reason||'unknown');
+  gh.style.color=gateOk?'#bbf7d0':'#fecaca';
+
+  $('t-lang').textContent=s.current_lang||'-';
+  $('t-lu').textContent=s.last_user||'-';
+  $('t-lr').textContent=s.last_reply||'-';
+  $('t-stt').textContent=(s.stt_s>0?s.stt_s.toFixed(2)+'s':'-');
+  $('t-ttf').textContent=(s.llm_ttf_s>0?s.llm_ttf_s.toFixed(2)+'s':'-');
+  $('t-tta').textContent=(s.tts_tta_s>0?s.tts_tta_s.toFixed(2)+'s':'-');
 }
+function gateRow(vId,cId,measured,floor){
+  const m=typeof measured==='number'?measured:0, f=typeof floor==='number'?floor:0;
+  $(vId).textContent=m.toFixed(2)+' / '+f.toFixed(2);
+  const pass=m>=f;
+  const c=$(cId);c.textContent=pass?'PASS':'FAIL';c.className='chip '+(pass?'pass':'fail');
+}
+function esc(t){return String(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function T(id,on){$(id).classList.toggle('on',on);}
+function P(url,body){fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(r=>r.json()).catch(()=>{});}
+function S(){const t=$('say-i');if(t.value.trim()){P('/api/say',{text:t.value});t.value='';}}
+$('kid-t').onclick=()=>{kid=!kid;T('kid-t',kid);P('/api/kid',{on:kid});};
+$('mute-t').onclick=()=>{mute=!mute;T('mute-t',mute);P('/api/mute',{muted:mute});};
 
-/* ── control actions ── */
-function post(url,body){fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(r=>r.json()).catch(()=>{});}
-function doSay(){const t=$('say-text');if(t.value.trim()){post('/api/say',{text:t.value});t.value='';}}
-function setToggle(el,on){el.classList.toggle('on',on);}
-let kidOn=true,muteOn=false;
-$('kid-toggle').onclick=()=>{kidOn=!kidOn;post('/api/kid',{on:kidOn});setToggle($('kid-toggle'),kidOn);};
-$('mute-toggle').onclick=()=>{muteOn=!muteOn;post('/api/mute',{muted:muteOn});setToggle($('mute-toggle'),muteOn);};
+let vt,rt,et;
+function dV(k,v){
+  if(k==='vol'){vd=true;$('s-vol').textContent=parseFloat(v).toFixed(1);clearTimeout(vt);vt=setTimeout(()=>{P('/api/volume',{volume:parseFloat(v)});vd=false;},300);}
+  else if(k==='rate'){rd=true;const r=(v>=0?'+':'')+v+'%';$('s-rate').textContent=r;clearTimeout(rt);rt=setTimeout(()=>{P('/api/rate',{rate:r});rd=false;},300);}
+  else{ed=true;$('s-ene').textContent=parseFloat(v).toFixed(1);clearTimeout(et);et=setTimeout(()=>{P('/api/energy',{energy:parseFloat(v)});ed=false;},300);}
+}
+['vol-sl','rate-sl','ene-sl'].forEach(id=>{const el=$(id);el.addEventListener('mousedown',()=>{if(id==='vol-sl')vd=true;if(id==='rate-sl')rd=true;if(id==='ene-sl')ed=true;});el.addEventListener('mouseup',()=>{vd=rd=ed=false;});});
 
-/* ── sliders with debounce ── */
-let volDragging=false,rateDragging=false,energyDragging=false;
-let volTimer=null,rateTimer=null,energyTimer=null;
-function debVol(v){volDragging=true;$('s-vol').textContent=parseFloat(v).toFixed(1);clearTimeout(volTimer);volTimer=setTimeout(()=>{post('/api/volume',{volume:parseFloat(v)});volDragging=false;},300);}
-function debRate(v){rateDragging=true;const r=(v>=0?'+':'')+v+'%';$('s-rate').textContent=r;clearTimeout(rateTimer);rateTimer=setTimeout(()=>{post('/api/rate',{rate:r});rateDragging=false;},300);}
-function debEnergy(v){energyDragging=true;$('s-energy').textContent=parseFloat(v).toFixed(1);clearTimeout(energyTimer);energyTimer=setTimeout(()=>{post('/api/energy',{energy:parseFloat(v)});energyDragging=false;},300);}
-$('vol-slider').addEventListener('mousedown',()=>volDragging=true);
-$('vol-slider').addEventListener('mouseup',()=>volDragging=false);
-$('rate-slider').addEventListener('mousedown',()=>rateDragging=true);
-$('rate-slider').addEventListener('mouseup',()=>rateDragging=false);
-$('energy-slider').addEventListener('mousedown',()=>energyDragging=true);
-$('energy-slider').addEventListener('mouseup',()=>energyDragging=false);
+let rmst,voit,pkt,durt,vadt,brgt;
+function dA(k,v){
+  if(k==='rms'){rmsd=true;$('s-rms').textContent=Math.round(v);clearTimeout(rmst);rmst=setTimeout(()=>{P('/api/audiotune',{min_rms:parseFloat(v)});rmsd=false;},300);}
+  else if(k==='voi'){void_=true;$('s-voi').textContent=parseFloat(v).toFixed(2);clearTimeout(voit);voit=setTimeout(()=>{P('/api/audiotune',{min_voiced:parseFloat(v)});void_=false;},300);}
+  else if(k==='pk'){pkd=true;$('s-pk').textContent=parseFloat(v).toFixed(2);clearTimeout(pkt);pkt=setTimeout(()=>{P('/api/audiotune',{min_peak:parseFloat(v)});pkd=false;},300);}
+  else if(k==='dur'){durd=true;$('s-dur').textContent=parseFloat(v).toFixed(2);clearTimeout(durt);durt=setTimeout(()=>{P('/api/audiotune',{min_dur:parseFloat(v)});durd=false;},300);}
+  else if(k==='vad'){vadd=true;$('s-vad').textContent=parseFloat(v).toFixed(2);clearTimeout(vadt);vadt=setTimeout(()=>{P('/api/audiotune',{vad_thresh:parseFloat(v)});vadd=false;},300);}
+  else{brgd=true;$('s-brg').textContent=parseFloat(v).toFixed(2);clearTimeout(brgt);brgt=setTimeout(()=>{P('/api/audiotune',{barge_thresh:parseFloat(v)});brgd=false;},300);}
+}
+['rms-sl','voi-sl','pk-sl','dur-sl','vad-sl','brg-sl'].forEach(id=>{const el=$(id);el.addEventListener('mousedown',()=>{if(id==='rms-sl')rmsd=true;if(id==='voi-sl')void_=true;if(id==='pk-sl')pkd=true;if(id==='dur-sl')durd=true;if(id==='vad-sl')vadd=true;if(id==='brg-sl')brgd=true;});el.addEventListener('mouseup',()=>{rmsd=void_=pkd=durd=vadd=brgd=false;});});
 
-/* ── people roster (refetched via WS when count changes) ── */
-let lastPeopleCount=-1;
-function fetchPeople(){
+const gg=$('g-grid');
+G.forEach(g=>{const b=document.createElement('b');b.className='df';b.textContent=g;b.onclick=()=>P('/api/gesture',{name:g});gg.appendChild(b);});
+
+let lp=-1;
+function H(){
   fetch('/api/people').then(r=>r.json()).then(d=>{
-    const p=$('people');
+    const p=$('ppl');
     if(!d.people||!d.people.length){p.innerHTML='<div style="color:#64748b">none enrolled</div>';return;}
     p.innerHTML=d.people.map(x=>'<div class="person"><div class="n">'+esc(x.name)+'</div><div class="f">'+(x.facts&&x.facts.length?x.facts.length+' fact(s)':'no facts')+'</div></div>').join('');
   }).catch(()=>{});
 }
-fetchPeople();
+H();
 
-/* ── gesture grid ── */
-const gg=$('gesture-grid');
-GESTURES.forEach(g=>{const b=document.createElement('button');b.className='ctrl';b.textContent=g;b.onclick=()=>post('/api/gesture',{name:g});gg.appendChild(b);});
-
-/* ── dance buttons ── */
 fetch('/api/dances').then(r=>r.json()).then(d=>{
-  const db=$('dance-buttons');
+  const db=$('d-grid');
   (d.dances||[]).forEach(dn=>{
-    const b=document.createElement('button');b.className='ctrl warn';
-    b.textContent=dn.label+' ('+dn.bpm+' BPM)';
-    b.onclick=()=>post('/api/dance',{name:dn.key});
-    db.appendChild(b);
+    const b=document.createElement('b');b.className='warn';b.textContent=dn.label;b.onclick=()=>P('/api/dance',{name:dn.key});db.appendChild(b);
   });
 }).catch(()=>{});
-
 </script>
 </body>
 </html>"""
 
 
-class WebStage:
-    """Tabbed dashboard: one page, #stage and #control tabs."""
+async def _safe_body(request: Request) -> dict:
+    """Parse a JSON request body, returning {} on any error or non-object.
 
-    def __init__(
-        self,
-        state: LiveState,
-        camera_hub: CameraHub,
-        host: str = "0.0.0.0",
-        port: int = 8080,
-    ) -> None:
+    Keeps a malformed POST (kid mashing a keyboard, a stray curl) from 500-ing
+    a control endpoint mid-demo instead of being a harmless no-op.
+    """
+    try:
+        b = await request.json()
+        return b if isinstance(b, dict) else {}
+    except Exception:
+        return {}
+
+
+def _safe_float(v, default: float) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+class WebStage:
+    def __init__(self, state: LiveState, camera_hub: CameraHub,
+                 host: str = "0.0.0.0", port: int = 8080) -> None:
         self.state = state
         self.camera_hub = camera_hub
         self.host = host
         self.port = port
         self._stop_flag = threading.Event()
         self._thread: threading.Thread | None = None
-        self.app = FastAPI(title="Reachy Mini Stage")
+        self._server = None  # uvicorn.Server, set in start()
+        self.app = FastAPI(title="Reachy")
         self._register_routes()
 
     def _register_routes(self) -> None:
-        ge_json = json.dumps(GESTURE_EMOJI)
         gestures_json = json.dumps(GESTURES)
 
         @self.app.get("/")
         def _index() -> HTMLResponse:
-            return HTMLResponse(
-                _HTML.replace("__G_E__", ge_json)
-                     .replace("__GESTURES__", gestures_json)
-            )
+            return HTMLResponse(_HTML.replace("__GESTURES__", gestures_json))
 
         @self.app.get("/video")
         def _video() -> StreamingResponse:
-            return StreamingResponse(
-                self._video_stream(),
-                media_type="multipart/x-mixed-replace; boundary=frame",
-            )
+            return StreamingResponse(self._video_stream(),
+                                     media_type="multipart/x-mixed-replace; boundary=frame")
 
         @self.app.get("/status")
         def _status() -> dict:
@@ -488,151 +587,133 @@ class WebStage:
         @self.app.websocket("/ws")
         async def _ws(websocket: WebSocket) -> None:
             await websocket.accept()
-            last_key: str | None = None
-            last_sent = 0.0
+            last_key, last_sent = None, 0.0
             try:
                 while not self._stop_flag.is_set():
                     snap = self.state.snapshot()
-                    key = json.dumps({k: v for k, v in snap.items()
-                                      if k != "uptime_s"})
+                    key = json.dumps({k: v for k, v in snap.items() if k != "uptime_s"})
                     now = time.time()
                     if key != last_key or now - last_sent >= 1.0:
                         await websocket.send_text(json.dumps(snap))
-                        last_key = key
-                        last_sent = now
+                        last_key = key; last_sent = now
                     await asyncio.sleep(0.12)
-            except WebSocketDisconnect:
-                pass
-            except Exception:
-                pass
+            except WebSocketDisconnect: pass
+            except Exception: pass
+
+        @self.app.websocket("/scope")
+        async def _scope(websocket: WebSocket) -> None:
+            # High-rate (~30 Hz) mic-level stream for the Tech tab's oscilloscope —
+            # the main /ws is throttled to ~8 Hz which is too coarse to draw a
+            # smooth scope trace. Keep this endpoint minimal so a stalled scope
+            # client never affects the main dashboard websocket.
+            await websocket.accept()
+            try:
+                while not self._stop_flag.is_set():
+                    await websocket.send_text(json.dumps({
+                        "rms": self.state.mic_rms,
+                        "floor": self.state.gate_min_rms,
+                        "in_speech": self.state.vad_in_speech,
+                        "vad": self.state.vad_thresh,
+                    }))
+                    await asyncio.sleep(0.033)
+            except WebSocketDisconnect: pass
+            except Exception: pass
 
         @self.app.post("/api/wake")
-        def _wake() -> dict:
-            self.state.request_wake()
-            return {"ok": True}
-
+        def _w() -> dict: self.state.request_wake(); return {"ok": True}
         @self.app.post("/api/sleep")
-        def _sleep() -> dict:
-            self.state.request_sleep()
-            return {"ok": True}
-
+        def _sl() -> dict: self.state.request_sleep(); return {"ok": True}
         @self.app.post("/api/say")
-        async def _say(request: Request) -> dict:
-            data = await request.json()
-            self.state.request_say(data.get("text", ""))
-            return {"ok": True}
-
+        async def _sy(request: Request) -> dict:
+            d = await _safe_body(request); self.state.request_say(str(d.get("text", ""))[:500]); return {"ok": True}
         @self.app.post("/api/stop")
-        def _stop() -> dict:
-            self.state.request_shutdown()
-            return {"ok": True}
-
+        def _st() -> dict: self.state.request_shutdown(); return {"ok": True}
         @self.app.post("/api/mute")
-        async def _mute(request: Request) -> dict:
-            data = await request.json()
-            self.state.muted = bool(data.get("muted", False))
-            return {"ok": True}
-
+        async def _mu(request: Request) -> dict:
+            d = await _safe_body(request); self.state.muted = bool(d.get("muted", False)); return {"ok": True}
         @self.app.post("/api/kid")
-        async def _kid(request: Request) -> dict:
-            data = await request.json()
-            self.state.kid_mode = bool(data.get("on", True))
-            return {"ok": True}
-
-        @self.app.post("/api/volume")
-        async def _volume(request: Request) -> dict:
-            data = await request.json()
-            v = float(data.get("volume", 2.5))
-            self.state.volume = max(0.0, min(5.0, v))
-            return {"ok": True}
-
-        @self.app.post("/api/rate")
-        async def _rate(request: Request) -> dict:
-            data = await request.json()
-            self.state.speech_rate = str(data.get("rate", "+20%"))[:10]
-            return {"ok": True}
-
-        @self.app.post("/api/energy")
-        async def _energy(request: Request) -> dict:
-            data = await request.json()
-            self.state.energy = max(0.0, min(1.0, float(data.get("energy", 1.0))))
-            return {"ok": True}
-
+        async def _ki(request: Request) -> dict:
+            d = await _safe_body(request); self.state.kid_mode = bool(d.get("on", True)); return {"ok": True}
         @self.app.post("/api/gesture")
-        async def _gesture(request: Request) -> dict:
-            data = await request.json()
-            self.state.request_gesture(data.get("name", ""))
+        async def _ge(request: Request) -> dict:
+            d = await _safe_body(request); self.state.request_gesture(str(d.get("name", ""))); return {"ok": True}
+        @self.app.post("/api/volume")
+        async def _vo(request: Request) -> dict:
+            d = await _safe_body(request); self.state.volume = max(0.0, min(5.0, _safe_float(d.get("volume"), 2.5))); return {"ok": True}
+        @self.app.post("/api/rate")
+        async def _ra(request: Request) -> dict:
+            d = await _safe_body(request); self.state.speech_rate = str(d.get("rate", "+20%"))[:10]; return {"ok": True}
+        @self.app.post("/api/energy")
+        async def _en(request: Request) -> dict:
+            d = await _safe_body(request); self.state.energy = max(0.0, min(1.0, _safe_float(d.get("energy"), 1.0))); return {"ok": True}
+        @self.app.post("/api/audiotune")
+        async def _at(request: Request) -> dict:
+            d = await _safe_body(request)
+            if "min_rms" in d:
+                self.state.gate_min_rms = max(0.0, min(2000.0, _safe_float(d.get("min_rms"), self.state.gate_min_rms)))
+            if "min_voiced" in d:
+                self.state.gate_min_voiced = max(0.0, min(1.0, _safe_float(d.get("min_voiced"), self.state.gate_min_voiced)))
+            if "min_peak" in d:
+                self.state.gate_min_peak = max(0.0, min(1.0, _safe_float(d.get("min_peak"), self.state.gate_min_peak)))
+            if "min_dur" in d:
+                self.state.gate_min_dur = max(0.0, min(1.5, _safe_float(d.get("min_dur"), self.state.gate_min_dur)))
+            if "vad_thresh" in d:
+                self.state.vad_thresh = max(0.1, min(0.95, _safe_float(d.get("vad_thresh"), self.state.vad_thresh)))
+            if "barge_thresh" in d:
+                self.state.barge_thresh = max(0.1, min(0.95, _safe_float(d.get("barge_thresh"), self.state.barge_thresh)))
             return {"ok": True}
-
         @self.app.post("/api/dance")
-        async def _dance(request: Request) -> dict:
-            body = {}
-            try:
-                body = await request.json()
-            except Exception:
-                pass
-            self.state.request_dance(body.get("name", "macarena"))
-            return {"ok": True}
-
+        async def _da(request: Request) -> dict:
+            d = await _safe_body(request); self.state.request_dance(str(d.get("name", "macarena"))); return {"ok": True}
         @self.app.get("/api/dances")
-        def _dances() -> dict:
+        def _ds() -> dict:
             from reachy_demo.dance import DANCES
-            return {"dances": [
-                {"key": k, "label": v["label"], "bpm": v["bpm"],
-                 "duration": v["duration"]}
-                for k, v in DANCES.items()
-            ]}
-
+            return {"dances": [{"key": k, "label": v["label"], "bpm": v["bpm"], "duration": v["duration"]} for k, v in DANCES.items()]}
         @self.app.get("/api/people")
-        def _people() -> dict:
+        def _pe() -> dict:
             from reachy_demo.memory import known_people, load_person_facts
-            return {"people": [
-                {"name": n, "facts": load_person_facts(n)}
-                for n in known_people()
-            ]}
+            return {"people": [{"name": n, "facts": load_person_facts(n)} for n in known_people()]}
 
     def _video_stream(self):
         heartbeat = 0
         while not self._stop_flag.is_set():
-            try:
-                jpg = self.camera_hub.mjpeg_bytes()
-            except Exception:
-                jpg = None
+            try: jpg = self.camera_hub.mjpeg_bytes()
+            except Exception: jpg = None
             if jpg is not None:
                 heartbeat = 0
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n"
-                    b"Content-Length: " + str(len(jpg)).encode() + b"\r\n"
-                    b"\r\n" + jpg + b"\r\n"
-                )
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                       + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
             else:
                 heartbeat += 1
                 if heartbeat >= 60:
-                    yield (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Content-Length: 0\r\n"
-                        b"\r\n\r\n"
-                    )
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 0\r\n\r\n\r\n"
                     heartbeat = 0
             time.sleep(1 / 30)
 
     def start(self) -> None:
         import uvicorn
-
         self._stop_flag.clear()
-        self._thread = threading.Thread(
-            target=uvicorn.run,
-            args=(self.app,),
-            kwargs={
-                "host": self.host,
-                "port": self.port,
-                "log_level": "warning",
-            },
-            daemon=True,
-        )
+        # Hold the Server instance (not the fire-and-forget uvicorn.run) so
+        # stop() can actually free port 8080 — otherwise a supervised restart
+        # of the demo can't rebind the dashboard and the projector goes dark.
+        config = uvicorn.Config(self.app, host=self.host, port=self.port,
+                                log_level="warning")
+        self._server = uvicorn.Server(config)
+
+        def _serve() -> None:
+            try:
+                self._server.run()
+            except Exception as e:  # e.g. port 8080 already held by an orphan run
+                print(f"\n*** DASHBOARD FAILED TO START on {self.host}:{self.port}: {e}\n"
+                      f"*** The projector/control page will not load. Is another demo "
+                      f"still running? Try: pkill -9 -f reachy-mini-daemon\n", flush=True)
+
+        self._thread = threading.Thread(target=_serve, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop_flag.set()
+        if self._server is not None:
+            self._server.should_exit = True
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)

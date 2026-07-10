@@ -32,7 +32,7 @@ PipeWire holds the device, so direct ALSA gives "Device or resource busy").
 Always use `run.sh` — it prepends `.venv/bin` to `PATH`, which is required for `spawn_daemon=True` to find `reachy-mini-daemon`:
 
 ```bash
-./run.sh demos/demo1_moves.py         # run a specific demo
+./run.sh demos/demo_welcome.py        # run a specific demo
 ./menu.sh                              # interactive demo picker
 ```
 
@@ -136,6 +136,24 @@ subprocess.Popen(["aplay", "-D", "plughw:CARD=Audio,DEV=0", "-q", wav_path])
 
 `plughw:CARD=Audio,DEV=0` goes direct to the robot's USB speaker, bypassing PipeWire/PulseAudio. Never route through PulseAudio sinks for the robot — the routing is fragile and goes to whichever device PipeWire chooses as default.
 
+## Shared library — `reachy_demo/`
+
+The talking demos (4–8) are thin entry points over a shared `reachy_demo/`
+package — **import from it, don't reimplement in a demo.** Key modules:
+`daemon.py` (manual daemon lifecycle — `start_daemon()`), `animator.py`
+(background animation thread + `NAMED_GESTURES`), `listener.py` (single
+source of truth for the VAD mic loop with barge-in + auto-recovery),
+`audio.py` / `tts_edge.py` / `tts_piper.py` (I/O + beeps), `groq_client.py`
++ `cerebras_client.py` (STT/LLM), `face_id.py` + `camera.py` (vision),
+`live_state.py` + `web_server.py` + `web_stage.py` (dashboard bridge and the
+two FastAPI dashboards), `memory.py` / `session_log.py` / `search.py` /
+`kids.py` / `dance.py`. `run.sh` exports `PYTHONPATH` to the repo root so
+`from reachy_demo.X import …` resolves from any demo.
+
+**`AGENTS.md` has the full module-by-module map** (one row per module, with the
+exact entry points and gotchas) plus verification notes, file/data conventions,
+and the `tools/` diagnostic scripts — read it before extending a talking demo.
+
 ## Demo overview
 
 | Menu | File | Voice | Features |
@@ -147,9 +165,17 @@ subprocess.Popen(["aplay", "-D", "plughw:CARD=Audio,DEV=0", "-q", wav_path])
 | 5 | demo_deepseek.py | edge-tts (AvaMultilingual) | Like #4 but uses `opencode run` (DeepSeek V4 Flash) as LLM harness; STT still via Groq; ~8s latency |
 | 6 | demo_instant.py | edge-tts (AvaMultilingual, streaming) | Streaming TTS — starts talking ~0.4s after LLM produces a sentence |
 | 7 | demo_converse.py | edge-tts (AvaMultilingual) | Unified: instant talk + face ID + web dashboard |
+| 8 | demo_hackathon.py | edge-tts (AvaMultilingual) | Same engine as #7, dual-view tabbed dashboard (`/#stage` projector + `/#control` operator), kid mode on, 3 dances |
 
-**Character rules shared by all talking demos (4, 5, 6, 7):**
-- 1 sentence, 10 words max — enforced in system prompt AND via `max_tokens=45`
+`menu.sh` is the source of truth for the menu; several docs still list dead
+filenames (e.g. `demo1_moves.py`). Not in the menu: `demo_two_robots.py`
+(two-robot comedy duo — needs a second Reachy + manual dual-daemon launch,
+see `docs/TWO_ROBOT_PLAN.md`), plus older `demo_dialog.py` / `demo_edge.py` /
+`demo_talk_ns.py`.
+
+**Character rules shared by all talking demos (4, 5, 6, 7, 8):**
+- Short replies — one sentence for simple answers, up to three (~20 words) for detailed
+  ones; enforced in the system prompt AND via `max_tokens=88` (demo_converse/hackathon)
 - CRITICAL LANGUAGE RULE at top of every system prompt — robot matches user's language and switches mid-conversation
 - No arms, no legs yet — Reachy acknowledges this with self-deprecating humour if asked
 
@@ -163,8 +189,8 @@ The unified demo: instant talk + face ID + web dashboard in one process.
   to `cache/models/` on first run. Falls back to dlib if OpenCV face modules are
   unavailable.
 - **Web dashboard:** FastAPI on `http://localhost:8080` — MJPEG `/video` (live camera
-  with face boxes), `/status` JSON, and `/api/wake|sleep|say|mute` controls. Frontend
-  auto-reconnects.
+  with face boxes), `/status` JSON, a `/ws` WebSocket push, and
+  `/api/wake|sleep|say|mute|stop` controls. Frontend auto-reconnects.
 - **Name onboarding:** when an unknown face is detected, Reachy asks the visitor's
   name, captures a few frames, and adds them to the roster live (no restart needed).
 - **Speaker-lock gaze:** the head turns to track the face of whoever just spoke.
@@ -188,12 +214,12 @@ All online demos (5, 6, 7 and demo_dance.py) use edge-tts, configured in `reachy
 
 ```python
 VOICE = "en-US-AvaMultilingualNeural"   # single voice for ALL languages (70+ supported)
-RATE, PITCH, VOL = "+30%", "+16Hz", "2.5"
+RATE, PITCH, VOL = "+20%", "+48Hz", "2.5"
 ```
 
-**PITCH is `+16Hz`** — AvaMultilingual is an adult voice at 0Hz; the pitch lift is what makes
-Reachy sound cute and young. Never set it to `0`. Raise toward `+24Hz` for even cuter; past
-`~+28Hz` it starts sounding chipmunky. (The old setup used `en-US-AnaNeural`, a naturally cute
+**PITCH is `+48Hz`** — AvaMultilingual is an adult voice at 0Hz; the pitch lift is what makes
+Reachy sound cute and young. Never set it to `0`. Lower toward `+24Hz` for a calmer voice;
+much past `+48Hz` it starts sounding chipmunky. (The old setup used `en-US-AnaNeural`, a naturally cute
 English-only child voice — we traded it for AvaMultilingual + pitch to gain 70+ languages.)
 The multilingual voice auto-speaks in whatever language the user uses (Spanish, French,
 Japanese, Arabic, etc.) without switching voice models.

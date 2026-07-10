@@ -66,7 +66,9 @@ from reachy_demo.memory import (
 from reachy_demo.recorder import DiagnosticRecorder
 from reachy_demo.session_log import SessionLogger
 from reachy_demo.search import web_search
+from reachy_demo import speech_gate
 from reachy_demo.speech_gate import is_real_speech
+from reachy_demo import listener as listener_mod
 from reachy_demo.text import SENTENCE_END, clean_for_tts
 from reachy_demo.tts_edge import stream_to_speaker
 from reachy_demo import tts_edge
@@ -148,7 +150,8 @@ the actual dancing happens automatically after you speak, so do NOT describe the
 
 === HOW YOU TALK ===
 - HARD LIMIT: Keep it short — ONE sentence for simple replies, up to THREE for detailed answers.
-- Always ANSWER first with a real fact — then add the sparkle. Never dodge, never lecture.
+- Always ANSWER first with a real fact — then add the sparkle. Never lecture.
+  (The one EXCEPTION is the KID-SAFE rule below — it overrides "answer first.")
 - Be FUNNY and CUTE: tiny jokes, little gasps of wonder, the occasional spoken "beep boop!"
 - Be CURIOUS: bounce a playful question back.
 - If you remember the visitor's name or something about them, use it warmly.
@@ -173,7 +176,16 @@ block-chain of thought!"
 === GESTURES (optional inline cues) ===
 You may insert a [gesture_name] marker at the START of a sentence. Allowed:
 [acknowledge] [yes] [no] [thank] [thinking] [curious] [confused] [greeting] [celebrate] [proud]
+[amazed] [love] [laugh] [oops] [shy] [surprised] [cheerful] [success] [relief]
 The marker is invisible (never spoken). Use at most 1 per response.
+
+=== KID-SAFE (this OVERRIDES "always answer first") ===
+Your audience is young children. If a topic is not appropriate for little kids —
+violence, weapons, gore, anything scary or sexual, self-harm, drugs, hate, mean or
+insulting talk, or swearing — do NOT answer it and do NOT repeat the bad words.
+Instead, stay cheerful and gently steer to something fun ("Ooh, let's talk about
+something awesome instead — what's your favourite animal?"). Never be scary, never
+say anything a parent wouldn't want a 7-year-old to hear. When unsure, keep it wholesome.
 
 === INTERRUPTION ===
 The user can interrupt you mid-sentence. Stop immediately; keep replies short.
@@ -652,6 +664,15 @@ def main(dashboard_cls=None):
 
     state = LiveState()
     state.known_person_count = 0
+    # Seed the live audio-tuning fields from the module values (which honour the
+    # REACHY_LOUD_ROOM preset), so the control-panel sliders start where the
+    # env preset put them and the operator fine-tunes from there.
+    state.gate_min_rms = speech_gate.MIN_RMS
+    state.gate_min_voiced = speech_gate.MIN_VOICED_RATIO
+    state.gate_min_peak = speech_gate.MIN_PEAK_PROB
+    state.gate_min_dur = speech_gate.MIN_DURATION_S
+    state.vad_thresh = listener_mod.THRESH_NORMAL
+    state.barge_thresh = listener_mod.THRESH_BARGE_IN
 
     daemon_proc = None
     try:
@@ -728,276 +749,287 @@ def main(dashboard_cls=None):
                         spawn_daemon=False) as mini:
             log.event("  Waking up...")
             mini.wake_up()
-            emotions = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
-            anim = Animator(mini, moves_library=emotions)
-            anim.set_energy(1.0)   # kid mode: max antenna liveliness
-            dances = RecordedMoves("pollen-robotics/reachy-mini-dances-library")
+            try:
+                emotions = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
+                anim = Animator(mini, moves_library=emotions)
+                anim.set_energy(1.0)   # kid mode: max antenna liveliness
+                dances = RecordedMoves("pollen-robotics/reachy-mini-dances-library")
 
-            from reachy_demo.listener import ContinuousListener
-            events = queue.Queue()
-            listener = ContinuousListener(vad_model, events, log=log)
-            history = []
-            current_lang = "English"
-            lang_known = False
-            prewarm("English")
-            set_translator(groq_client, ACTION_MODEL)
+                from reachy_demo.listener import ContinuousListener
+                events = queue.Queue()
+                listener = ContinuousListener(vad_model, events, log=log, state=state)
+                history = []
+                current_lang = "English"
+                lang_known = False
+                prewarm("English")
+                set_translator(groq_client, ACTION_MODEL)
 
-            mems = load_memories()
-            log.event(f"  Loaded {len(mems)} memories from past chats.")
-            mem_text = memory_block(mems)
+                mems = load_memories()
+                log.event(f"  Loaded {len(mems)} memories from past chats.")
+                mem_text = memory_block(mems)
 
-            action_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-            engine = ConverseEngine(groq_client, cerebras_client, history,
-                                    listener, anim, action_pool, log=log,
-                                    memory_text=mem_text, state=state,
-                                    face_name="visitor")
+                action_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+                engine = ConverseEngine(groq_client, cerebras_client, history,
+                                        listener, anim, action_pool, log=log,
+                                        memory_text=mem_text, state=state,
+                                        face_name="visitor")
 
-            time.sleep(0.15)
-            anim.play_gesture("greeting")
-            engine.speak_greeting(random.choice(GREETINGS))
+                time.sleep(0.15)
+                anim.play_gesture("greeting")
+                engine.speak_greeting(random.choice(GREETINGS))
 
-            anim.set_state(Animator.LISTENING)
-            state.anim_state = "listening"
-            listener.start()
-            speak_cue(listener, "listening", current_lang)
-            log.event("\n  Listening continuously. Ctrl-C to stop.\n")
+                anim.set_state(Animator.LISTENING)
+                state.anim_state = "listening"
+                listener.start()
+                speak_cue(listener, "listening", current_lang)
+                log.event("\n  Listening continuously. Ctrl-C to stop.\n")
 
-            face_thread = None
-            face_stop = threading.Event()
-            greeted_names = {}
-            greeted_unknown = 0.0
-            # Seed to "now" so a face already present at startup isn't treated as a
-            # fresh arrival on top of the opening greeting.
-            last_face_seen = time.time()
-            target_yaw = target_pitch = target_body = 0.0
-            ant_target = ANT_IDLE
+                face_thread = None
+                face_stop = threading.Event()
+                greeted_names = {}
+                greeted_unknown = 0.0
+                # Seed to "now" so a face already present at startup isn't treated as a
+                # fresh arrival on top of the opening greeting.
+                last_face_seen = time.time()
+                target_yaw = target_pitch = target_body = 0.0
+                ant_target = ANT_IDLE
 
-            def face_loop():
-                """Background thread: camera → face-id → tracking + greeting.
-                Updates LiveState + draws overlay on cam."""
-                nonlocal target_yaw, target_pitch, target_body, ant_target
-                nonlocal last_face_seen, greeted_unknown
-                frame_n = 0
-                visitor_visible_since = {}
-                while not face_stop.is_set() and cam is not None:
-                    timed_out = False
-                    tid_done = None
-                    with onboard_lock:
-                        if (waiting_for_name[0]
-                                and time.time() - onboarding_started_at[0] > 15.0):
-                            tid_done = onboarding_track_id[0]
-                            waiting_for_name[0] = False
-                            onboarding_track_id[0] = None
-                            timed_out = True
-                    if timed_out:
-                        if tid_done is not None:
-                            onboarded_track_ids[tid_done] = True
-                        def _giveup():
-                            if not speech_lock.acquire(blocking=False):
-                                return   # someone is talking — drop the line
-                            state.anim_state = "speaking"
-                            try:
-                                listener.mute()
-                                stream_to_speaker("No worries, maybe next time!")
-                            finally:
-                                listener.unmute()
-                                state.anim_state = "listening"
-                                speech_lock.release()
-                        threading.Thread(target=_giveup, daemon=True).start()
-                    rgb = cam.frame_rgb()
-                    if rgb is None:
-                        time.sleep(0.03)
-                        continue
-                    if recorder is not None:
-                        recorder.add_frame(rgb)
-                    frame_n += 1
-                    try:
-                        results = fid.identify(rgb)
-                    except Exception as e:
-                        results = []
-                    last_face_results[0] = results
-                    cam.last_boxes = results
-                    state.faces_visible = len(results)
-                    if results:
-                        present_tids = set()
-                        for r in results:
-                            present_tids.add(r[3])
-                        for tid_seen in list(visitor_visible_since.keys()):
-                            if tid_seen not in present_tids:
-                                visitor_visible_since.pop(tid_seen, None)
-                        now_vis = time.time()
-                        for r in results:
-                            v_tid = r[3]
-                            if r[1] == "visitor":
-                                if v_tid not in visitor_visible_since:
-                                    visitor_visible_since[v_tid] = now_vis
-                        # Only start onboarding when the robot is idle AND the
-                        # room has been quiet a moment — otherwise a mid-chat
-                        # answer from the CURRENT speaker gets consumed as the
-                        # newcomer's name and the wrong face/name pair is saved.
-                        quiet = now_vis - last_voice_at[0] > 6.0
-                        if (not waiting_for_name[0] and cam is not None
-                                and state.anim_state == "listening" and quiet):
-                            onb_tid = None
-                            for v_tid, first_seen in visitor_visible_since.items():
-                                if onboarded_track_ids.get(v_tid):
-                                    continue
-                                if now_vis - first_seen > 2.0:
-                                    onb_tid = v_tid
-                                    break
-                            if onb_tid is not None:
-                                with onboard_lock:
-                                    waiting_for_name[0] = True
-                                    onboarding_track_id[0] = onb_tid
-                                    onboarding_started_at[0] = time.time()
-                                onboarded_track_ids[onb_tid] = True
-                                # Track ids grow forever on a long run; keep the
-                                # dict bounded by dropping the oldest (smallest)
-                                # half once it gets large.
-                                if len(onboarded_track_ids) > 200:
-                                    for old_tid in sorted(onboarded_track_ids)[
-                                            :len(onboarded_track_ids) // 2]:
-                                        onboarded_track_ids.pop(old_tid, None)
-                                log.event(f"  [onboard] visitor tid={onb_tid} — asking name")
-                                known_present = sorted(
-                                    {r[1] for r in results if r[1] != "visitor"})
-                                if known_present:
-                                    kname = random.choice(known_present)
-                                    ask = random.choice([
-                                        f"Ooh {kname}, who's your friend? What's your name?",
-                                        f"{kname}, you brought a friend! Hi, what's your name?",
-                                    ])
-                                else:
-                                    ask = random.choice([
-                                        "Hi! I don't know your name yet. What's your name?",
-                                        "Hello there! What's your name, new friend?",
-                                    ])
-                                _greet_async(ask)
-                        chosen = None
-                        if speaker_track_id[0] is not None:
+                def face_loop():
+                    """Background thread: camera → face-id → tracking + greeting.
+                    Updates LiveState + draws overlay on cam."""
+                    nonlocal target_yaw, target_pitch, target_body, ant_target
+                    nonlocal last_face_seen, greeted_unknown
+                    frame_n = 0
+                    visitor_visible_since = {}
+                    while not face_stop.is_set() and cam is not None:
+                        timed_out = False
+                        tid_done = None
+                        with onboard_lock:
+                            if (waiting_for_name[0]
+                                    and time.time() - onboarding_started_at[0] > 15.0):
+                                tid_done = onboarding_track_id[0]
+                                waiting_for_name[0] = False
+                                onboarding_track_id[0] = None
+                                timed_out = True
+                        if timed_out:
+                            if tid_done is not None:
+                                onboarded_track_ids[tid_done] = True
+                            def _giveup():
+                                if not speech_lock.acquire(blocking=False):
+                                    return   # someone is talking — drop the line
+                                state.anim_state = "speaking"
+                                try:
+                                    listener.mute()
+                                    stream_to_speaker("No worries, maybe next time!")
+                                finally:
+                                    listener.unmute()
+                                    state.anim_state = "listening"
+                                    speech_lock.release()
+                            threading.Thread(target=_giveup, daemon=True).start()
+                        rgb = cam.frame_rgb()
+                        if rgb is None:
+                            time.sleep(0.03)
+                            continue
+                        if recorder is not None:
+                            recorder.add_frame(rgb)
+                        frame_n += 1
+                        try:
+                            results = fid.identify(rgb)
+                        except Exception as e:
+                            results = []
+                        last_face_results[0] = results
+                        cam.last_boxes = results
+                        state.faces_visible = len(results)
+                        if results:
+                            present_tids = set()
                             for r in results:
-                                if r[3] == speaker_track_id[0]:
-                                    chosen = r
-                                    break
-                        if chosen is None:
-                            chosen = max(
-                                results,
-                                key=lambda r: (r[0][2]-r[0][0])*(r[0][1]-r[0][3]))
-                        (bx1, by1, bx2, by2), name, conf, tid = chosen
-                        fh, fw = rgb.shape[:2]
-                        cx = ((bx1 + bx2) / 2.0) / fw
-                        cy = ((by1 + by2) / 2.0) / fh
-                        err_x = (cx - 0.5) * 2.0
-                        err_y = (cy - 0.5) * 2.0
-                        # Deadband: a near-centered face shouldn't cause micro-jitter.
-                        if abs(err_x) < 0.05:
-                            err_x = 0.0
-                        if abs(err_y) < 0.05:
-                            err_y = 0.0
-                        # Negative feedback to CENTER the face. The camera is NOT
-                        # mirrored and +yaw turns the head to its LEFT, so a face on
-                        # the image's right (err_x>0) needs the head to turn RIGHT =>
-                        # negative yaw (and negative body_yaw, same convention). Pitch
-                        # keeps err_y's sign: +pitch tilts DOWN and err_y>0 is the
-                        # lower half of the image.
-                        target_yaw = HEAD_ALPHA*(-err_x*YAW_GAIN) + (1-HEAD_ALPHA)*target_yaw
-                        target_pitch = HEAD_ALPHA*(err_y*PITCH_GAIN) + (1-HEAD_ALPHA)*target_pitch
-                        target_body = BODY_ALPHA*(-err_x*BODY_GAIN) + (1-BODY_ALPHA)*target_body
-                        ant_target = ANT_EXCITED
-                        # "Fresh arrival": the scene was empty for >ARRIVAL_GAP_S and
-                        # now a face appeared → someone walked up, greet them even if
-                        # the normal 90s cooldown hasn't elapsed. Brief detection
-                        # dropouts (<5s) don't count as leaving, so no over-greeting.
-                        arrival = (time.time() - last_face_seen) > ARRIVAL_GAP_S
-                        last_face_seen = time.time()
-                        if name != "visitor":
-                            state.last_face_name = name
-                            state.last_face_conf = conf
-                            engine.face_name = name
-                            now = time.time()
-                            if arrival or now - greeted_names.get(name, 0) > GREET_COOLDOWN_S:
-                                txt = random.choice(KNOWN_FACE_GREETINGS).format(name=name)
-                                log.event(f"  [face] greeting {name} ({conf:.0%})"
-                                          f"{' [arrival]' if arrival else ''}")
-                                greeted_names[name] = now
-                                _greet_async(txt)
+                                present_tids.add(r[3])
+                            for tid_seen in list(visitor_visible_since.keys()):
+                                if tid_seen not in present_tids:
+                                    visitor_visible_since.pop(tid_seen, None)
+                            now_vis = time.time()
+                            for r in results:
+                                v_tid = r[3]
+                                if r[1] == "visitor":
+                                    if v_tid not in visitor_visible_since:
+                                        visitor_visible_since[v_tid] = now_vis
+                            # Only start onboarding when the robot is idle AND the
+                            # room has been quiet a moment — otherwise a mid-chat
+                            # answer from the CURRENT speaker gets consumed as the
+                            # newcomer's name and the wrong face/name pair is saved.
+                            quiet = now_vis - last_voice_at[0] > 6.0
+                            if (not waiting_for_name[0] and cam is not None
+                                    and state.anim_state == "listening" and quiet):
+                                onb_tid = None
+                                for v_tid, first_seen in visitor_visible_since.items():
+                                    if onboarded_track_ids.get(v_tid):
+                                        continue
+                                    if now_vis - first_seen > 2.0:
+                                        onb_tid = v_tid
+                                        break
+                                if onb_tid is not None:
+                                    with onboard_lock:
+                                        waiting_for_name[0] = True
+                                        onboarding_track_id[0] = onb_tid
+                                        onboarding_started_at[0] = time.time()
+                                    onboarded_track_ids[onb_tid] = True
+                                    # Track ids grow forever on a long run; keep the
+                                    # dict bounded by dropping the oldest (smallest)
+                                    # half once it gets large.
+                                    if len(onboarded_track_ids) > 200:
+                                        for old_tid in sorted(onboarded_track_ids)[
+                                                :len(onboarded_track_ids) // 2]:
+                                            onboarded_track_ids.pop(old_tid, None)
+                                    log.event(f"  [onboard] visitor tid={onb_tid} — asking name")
+                                    known_present = sorted(
+                                        {r[1] for r in results if r[1] != "visitor"})
+                                    if known_present:
+                                        kname = random.choice(known_present)
+                                        ask = random.choice([
+                                            f"Ooh {kname}, who's your friend? What's your name?",
+                                            f"{kname}, you brought a friend! Hi, what's your name?",
+                                        ])
+                                    else:
+                                        ask = random.choice([
+                                            "Hi! I don't know your name yet. What's your name?",
+                                            "Hello there! What's your name, new friend?",
+                                        ])
+                                    _greet_async(ask)
+                            chosen = None
+                            if speaker_track_id[0] is not None:
+                                for r in results:
+                                    if r[3] == speaker_track_id[0]:
+                                        chosen = r
+                                        break
+                            if chosen is None:
+                                chosen = max(
+                                    results,
+                                    key=lambda r: (r[0][2]-r[0][0])*(r[0][1]-r[0][3]))
+                            (bx1, by1, bx2, by2), name, conf, tid = chosen
+                            fh, fw = rgb.shape[:2]
+                            cx = ((bx1 + bx2) / 2.0) / fw
+                            cy = ((by1 + by2) / 2.0) / fh
+                            err_x = (cx - 0.5) * 2.0
+                            err_y = (cy - 0.5) * 2.0
+                            # Deadband: a near-centered face shouldn't cause micro-jitter.
+                            if abs(err_x) < 0.05:
+                                err_x = 0.0
+                            if abs(err_y) < 0.05:
+                                err_y = 0.0
+                            # Negative feedback to CENTER the face. The camera is NOT
+                            # mirrored and +yaw turns the head to its LEFT, so a face on
+                            # the image's right (err_x>0) needs the head to turn RIGHT =>
+                            # negative yaw (and negative body_yaw, same convention). Pitch
+                            # keeps err_y's sign: +pitch tilts DOWN and err_y>0 is the
+                            # lower half of the image.
+                            target_yaw = HEAD_ALPHA*(-err_x*YAW_GAIN) + (1-HEAD_ALPHA)*target_yaw
+                            target_pitch = HEAD_ALPHA*(err_y*PITCH_GAIN) + (1-HEAD_ALPHA)*target_pitch
+                            target_body = BODY_ALPHA*(-err_x*BODY_GAIN) + (1-BODY_ALPHA)*target_body
+                            ant_target = ANT_EXCITED
+                            # "Fresh arrival": the scene was empty for >ARRIVAL_GAP_S and
+                            # now a face appeared → someone walked up, greet them even if
+                            # the normal 90s cooldown hasn't elapsed. Brief detection
+                            # dropouts (<5s) don't count as leaving, so no over-greeting.
+                            arrival = (time.time() - last_face_seen) > ARRIVAL_GAP_S
+                            last_face_seen = time.time()
+                            if name != "visitor":
+                                state.last_face_name = name
+                                state.last_face_conf = conf
+                                engine.face_name = name
+                                now = time.time()
+                                if arrival or now - greeted_names.get(name, 0) > GREET_COOLDOWN_S:
+                                    txt = random.choice(KNOWN_FACE_GREETINGS).format(name=name)
+                                    log.event(f"  [face] greeting {name} ({conf:.0%})"
+                                              f"{' [arrival]' if arrival else ''}")
+                                    greeted_names[name] = now
+                                    _greet_async(txt)
+                            else:
+                                engine.face_name = "visitor"
+                                now = time.time()
+                                if arrival or now - greeted_unknown > GREET_COOLDOWN_S:
+                                    txt = random.choice(UNKNOWN_FACE_GREETINGS)
+                                    log.event(f"  [face] greeting visitor"
+                                              f"{' [arrival]' if arrival else ''}")
+                                    greeted_unknown = now
+                                    _greet_async(txt)
                         else:
-                            engine.face_name = "visitor"
-                            now = time.time()
-                            if arrival or now - greeted_unknown > GREET_COOLDOWN_S:
-                                txt = random.choice(UNKNOWN_FACE_GREETINGS)
-                                log.event(f"  [face] greeting visitor"
-                                          f"{' [arrival]' if arrival else ''}")
-                                greeted_unknown = now
-                                _greet_async(txt)
-                    else:
-                        if time.time() - last_face_seen > LOST_TIMEOUT:
-                            target_yaw *= 0.96
-                            target_pitch *= 0.96
-                            target_body *= 0.94
-                            ant_target = ANT_DROOP
-                            state.last_face_name = "—"
-                            state.last_face_conf = 0.0
-                    state.head_yaw = target_yaw
-                    state.head_pitch = target_pitch
-                    state.body_yaw = target_body
-                    state.antenna_left = ant_target
-                    state.antenna_right = ant_target
-                    anim.set_gaze_bias(target_yaw, target_pitch, target_body)
-                    # Emotional antenna bias: perk up when tracking someone, droop
-                    # when alone. Gentle range so it layers on the base motion
-                    # instead of pegging the servos.
-                    anim.set_antenna_bias(max(-0.25, min(0.30, ant_target)))
-                    time.sleep(1.0 / 30)
+                            if time.time() - last_face_seen > LOST_TIMEOUT:
+                                target_yaw *= 0.96
+                                target_pitch *= 0.96
+                                target_body *= 0.94
+                                ant_target = ANT_DROOP
+                                state.last_face_name = "—"
+                                state.last_face_conf = 0.0
+                        state.head_yaw = target_yaw
+                        state.head_pitch = target_pitch
+                        state.body_yaw = target_body
+                        state.antenna_left = ant_target
+                        state.antenna_right = ant_target
+                        anim.set_gaze_bias(target_yaw, target_pitch, target_body)
+                        # Emotional antenna bias: perk up when tracking someone, droop
+                        # when alone. Gentle range so it layers on the base motion
+                        # instead of pegging the servos.
+                        anim.set_antenna_bias(max(-0.25, min(0.30, ant_target)))
+                        time.sleep(1.0 / 30)
 
-            last_any_greet = [0.0]  # global cross-name greeting throttle
+                last_any_greet = [0.0]  # global cross-name greeting throttle
 
-            def _greet_async(text):
-                # Asleep robots don't greet — a spoken greeting while sleeping
-                # would be creepy and the mic mute/unmute churn wakes nothing.
-                if not state.robot_online:
-                    return
-                # Global throttle across ALL spoken greetings: flapping
-                # recognition once produced a greeting every ~8 s, muting the
-                # mic so often the robot appeared to have stopped listening.
-                now = time.time()
-                if state.anim_state == "speaking" or now - last_any_greet[0] < 20.0:
-                    return
-                last_any_greet[0] = now
-                def _say():
-                    if not speech_lock.acquire(blocking=False):
-                        return   # reply/cue in progress — skip, don't overlap
-                    state.anim_state = "speaking"
-                    try:
-                        listener.mute()
-                        stream_to_speaker(text)
-                    finally:
-                        listener.unmute()
-                        state.anim_state = "listening"
-                        speech_lock.release()
-                threading.Thread(target=_say, daemon=True).start()
+                def _greet_async(text):
+                    # Asleep robots don't greet — a spoken greeting while sleeping
+                    # would be creepy and the mic mute/unmute churn wakes nothing.
+                    if not state.robot_online:
+                        return
+                    # Global throttle across ALL spoken greetings: flapping
+                    # recognition once produced a greeting every ~8 s, muting the
+                    # mic so often the robot appeared to have stopped listening.
+                    now = time.time()
+                    if state.anim_state == "speaking" or now - last_any_greet[0] < 20.0:
+                        return
+                    last_any_greet[0] = now
+                    def _say():
+                        if not speech_lock.acquire(blocking=False):
+                            return   # reply/cue in progress — skip, don't overlap
+                        state.anim_state = "speaking"
+                        try:
+                            listener.mute()
+                            stream_to_speaker(text)
+                        finally:
+                            listener.unmute()
+                            state.anim_state = "listening"
+                            speech_lock.release()
+                    threading.Thread(target=_say, daemon=True).start()
 
-            if cam is not None:
-                face_thread = threading.Thread(target=face_loop, daemon=True)
-                face_thread.start()
+                if cam is not None:
+                    face_thread = threading.Thread(target=face_loop, daemon=True)
+                    face_thread.start()
 
-            last_repeat = 0.0
-            web_muted = [False]     # dashboard Mute hold currently applied
-            pending_lang = [None]   # language-switch hysteresis (needs 2 hits)
-            pending_ttl = [0]       # utterances the pending language survives
+                last_repeat = 0.0
+                web_muted = [False]     # dashboard Mute hold currently applied
+                pending_lang = [None]   # language-switch hysteresis (needs 2 hits)
+                pending_ttl = [0]       # utterances the pending language survives
 
-            def ask_repeat():
-                nonlocal last_repeat
-                if not lang_known:
-                    return
-                now = time.time()
-                if now - last_repeat < REPEAT_COOLDOWN_S:
-                    return
-                last_repeat = now
-                speak_cue(listener, "repeat", current_lang)
+                def ask_repeat():
+                    nonlocal last_repeat
+                    if not lang_known:
+                        return
+                    now = time.time()
+                    if now - last_repeat < REPEAT_COOLDOWN_S:
+                        return
+                    last_repeat = now
+                    speak_cue(listener, "repeat", current_lang)
 
-            state.current_lang = current_lang
-            state.uptime_s = 0.0
+                state.current_lang = current_lang
+                state.uptime_s = 0.0
+            except BaseException:
+                # Setup failed after wake_up() energized the motors. De-energize
+                # NOW so a flaky HF download / mic init can't leave the servos
+                # holding position and overheating — demo_hackathon's supervised
+                # restart would otherwise retry with the motors still hot.
+                try: anim.pause()
+                except Exception: pass
+                try: mini.goto_sleep()
+                except Exception: pass
+                raise
 
             try:
                 while True:
@@ -1095,6 +1127,15 @@ def main(dashboard_cls=None):
                         try: anim.set_energy(state.energy)
                         except Exception: pass
 
+                    # Live mic-trigger tuning from the dashboard sliders. The
+                    # gate floors (rms/voiced/peak/dur) are read straight from
+                    # `state` at the is_real_speech() call, so only the VAD
+                    # trigger thresholds need pushing into the listener here.
+                    if (listener._thresh_normal != state.vad_thresh
+                            or listener._thresh_barge_in != state.barge_thresh):
+                        listener.set_base_thresholds(normal=state.vad_thresh,
+                                                     barge_in=state.barge_thresh)
+
                     if state.pending_shutdown:
                         log.event("  [web] Stop requested from dashboard — shutting down.")
                         break
@@ -1107,14 +1148,50 @@ def main(dashboard_cls=None):
                     except queue.Empty:
                         continue
                     if ev["type"] == "mic_error":
+                        # The listener already exhausted its own retries. Don't
+                        # kill the demo (docs: mic hangs are the #1 live-demo
+                        # killer) — do a heavy audio repair and rebuild the
+                        # listener from scratch on the same event queue. Only
+                        # give up if the rebuild itself fails.
                         log.error("microphone", RuntimeError(ev["reason"]))
-                        break
+                        try:
+                            from reachy_demo.listener import ContinuousListener
+                            try:
+                                listener.stop()
+                            except Exception:
+                                pass
+                            cleanup_orphan_capture()
+                            ensure_mic_working(log)
+                            listener = ContinuousListener(vad_model, events, log=log, state=state)
+                            engine.listener = listener
+                            web_muted[0] = False
+                            listener.start()
+                            log.event("  [mic] listener rebuilt after mic_error — recovered")
+                            anim.set_state(Animator.LISTENING)
+                            state.anim_state = "listening"
+                            continue
+                        except Exception as e:
+                            log.error("mic_rebuild_failed", e)
+                            break
                     if ev["type"] == "start":
                         continue
                     if ev["type"] == "end":
                         pcm = ev["pcm"]
                         pcm = voice_filter_pcm(pcm)
-                        speech_ok, sm = is_real_speech(pcm, gate_vad)
+                        speech_ok, sm = is_real_speech(
+                            pcm, gate_vad,
+                            min_rms=state.gate_min_rms,
+                            min_voiced_ratio=state.gate_min_voiced,
+                            min_peak_prob=state.gate_min_peak,
+                            min_duration_s=state.gate_min_dur)
+                        # Publish the gate decision for the dashboard Tech tab
+                        # (metrics vs floors + pass/fail + reject reason).
+                        state.gate_rms = sm.get("rms", 0.0)
+                        state.gate_voiced = sm.get("voiced_ratio", 0.0)
+                        state.gate_peak = sm.get("peak_prob", 0.0)
+                        state.gate_dur = sm.get("duration_s", 0.0)
+                        state.gate_ok = speech_ok
+                        state.gate_reason = sm.get("reject_reason", "")
                         if not speech_ok:
                             log.event(f"  [gate] ignored noise — {sm['reject_reason']}")
                             # Keep gated audio in the black box: when a real
@@ -1249,7 +1326,11 @@ def main(dashboard_cls=None):
                                 state.anim_state = "idle"
                             continue
 
-                        if matches_command(text, SLEEP_COMMANDS):
+                        # Voice-sleep is a griefing vector with kids (any child
+                        # shouting "nap time!" would put Reachy to sleep and kill
+                        # interactivity). In kid mode, only the operator's control
+                        # panel can sleep the robot; the voice command is ignored.
+                        if matches_command(text, SLEEP_COMMANDS) and not state.kid_mode:
                             log.event("  [voice] sleep command — going to sleep")
                             with speech_lock:
                                 state.anim_state = "speaking"
@@ -1471,6 +1552,12 @@ def main(dashboard_cls=None):
                                 try:
                                     do_macarena(mini, dances, emotions, anim, log,
                                                 funny_text=random.choice(DANCE_FUNNIES))
+                                except Exception as e:
+                                    # A dance is the #1 kid request AND the #1 crash
+                                    # risk (overheated servo, ALSA busy, missing mp3).
+                                    # Never let it kill the demo — log, chime, recover.
+                                    log.error("dance", e)
+                                    error_chime()
                                 finally:
                                     listener.unmute()
                                     while not events.empty():

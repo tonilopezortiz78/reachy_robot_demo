@@ -33,7 +33,7 @@ reachy/
 cd /home/tony/software/robots/reachy
 ./menu.sh
 # or run a specific demo:
-./run.sh demos/demo1_moves.py
+./run.sh demos/demo_welcome.py
 ```
 
 ## Documents in this folder

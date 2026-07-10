@@ -28,14 +28,32 @@ NOTE: this rejects NOISE, not other humans. Distinguishing the visitor from a
 bystander's voice needs speaker recognition (e.g. a 3D-Speaker embedding, like
 xiaozhi-esp32 uses) — a possible future add; see is_real_speech docstring.
 """
+import os
+
 import numpy as np
 import torch
 
+
+def _envf(name: str, default: float) -> float:
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
 # ── Gate thresholds (tuned on real recorded turns; see test) ───────────────────
-MIN_RMS          = 120.0   # below this the clip is ambient hum, not a speaker
-MIN_VOICED_RATIO = 0.30    # ≥30% of frames must be voiced
-MIN_PEAK_PROB    = 0.75    # ≥1 clearly-voiced frame (rejects steady hum)
-MIN_DURATION_S   = 0.30    # shorter than this is a click/blip
+# LOUD-ROOM PRESET: set REACHY_LOUD_ROOM=1 (e.g. a crowded hackathon full of
+# chattering kids) to raise every floor so only the loud, close, deliberate
+# speaker holding the robot triggers it — background voices are rejected.
+# Individual floors can still be overridden with REACHY_GATE_* env vars.
+# WARNING: too high and Reachy goes deaf to soft-voiced kids — DO a 30-second
+# sound check on site and back the preset off if it stops hearing quiet children.
+_LOUD = os.environ.get("REACHY_LOUD_ROOM", "").lower() in ("1", "true", "yes", "on")
+
+MIN_RMS          = _envf("REACHY_GATE_MIN_RMS", 320.0 if _LOUD else 120.0)   # ambient-hum floor
+MIN_VOICED_RATIO = _envf("REACHY_GATE_MIN_VOICED", 0.42 if _LOUD else 0.30)  # ≥N% voiced frames
+MIN_PEAK_PROB    = _envf("REACHY_GATE_MIN_PEAK", 0.82 if _LOUD else 0.75)    # ≥1 clear voice peak
+MIN_DURATION_S   = _envf("REACHY_GATE_MIN_DUR", 0.45 if _LOUD else 0.30)     # click/blip floor
 _FRAME           = 512     # Silero's native frame size at 16 kHz
 _VAD_THRESH      = 0.5     # per-frame "voiced" cutoff for the ratio
 
