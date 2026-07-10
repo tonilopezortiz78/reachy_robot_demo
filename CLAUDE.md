@@ -242,6 +242,14 @@ ffplay -f v4l2 -framerate 30 -video_size 1280x720 /dev/video2   # live preview
 
 Or OpenCV: `cv2.VideoCapture('/dev/video2', cv2.CAP_V4L2)`.
 
+⚠️ **The camera node is NOT stable.** After replugs / vigorous dances the robot camera
+re-enumerates (`/dev/video2` → `video3`/`video4`), and `/dev/video0`,`video1` are the
+LAPTOP's built-in camera (never use — sees the room, not the robot's view). `camera.py`
+now finds the robot camera **by name** ("Reachy Mini Camera" via
+`/sys/class/video4linux/*/name`) at startup and auto-reconnects if the USB link drops
+mid-run. The whole web dashboard is gated on the camera opening, so a camera failure =
+silent no-dashboard on port 8080.
+
 ## Cleaning up orphaned daemons
 
 If a script is killed with `kill -9`, the daemon stays running. Before starting a new script:
@@ -249,6 +257,28 @@ If a script is killed with `kill -9`, the daemon stays running. Before starting 
 ```bash
 pkill -9 -f "reachy-mini-daemon"
 ```
+
+⚠️ **Daemon-403 wedge from rapid restarts:** repeated `pkill -9` + relaunch cycles can
+leave the daemon in a bad state — the SDK connect then fails with `HTTP 403` on
+`ws://localhost:8000/ws/sdk` (before any of our code runs) and the demo burns its 6
+auto-restarts. Fix: `pkill -9 -f reachy-mini-daemon`, **wait ~4-5 s** for the USB to
+settle, then relaunch clean. Prefer stopping the demo with **SIGINT** (Ctrl-C), not
+`kill -9`, so `goto_sleep()` runs and the motors power down (overheating risk otherwise).
+
+## Live tuning — environment variables
+
+Set before `./run.sh` to tune without editing code:
+
+| Var | Default | Effect |
+|---|---|---|
+| `REACHY_STT_MODEL` | `whisper-large-v3` | STT model. Full is best multilingual; `whisper-large-v3-turbo` is an option (measured ~same speed, slightly worse non-English). |
+| `REACHY_SILENCE_MS` | `500` | VAD end-of-utterance wait (ms). Lower = snappier turns but may clip a mid-sentence pause; 600 is safer for multilingual. |
+| `REACHY_DANCE_SPEED` | `2.0` | Dance tempo multiplier (double-time). 1.0–3.0. |
+| `REACHY_LOUD_ROOM` | off | Raises mic/gate thresholds for a noisy room. |
+
+The dashboard **Control** tab also live-tunes volume, speaker (robot/projector),
+energy, kid/crowd mode, and quick phrases; the **Tech** tab has the mic-tuning
+sliders + the per-turn timing readout (`stt / think / tts / reply-wait / talk`).
 
 ## What needs the missing GStreamer plugin
 
