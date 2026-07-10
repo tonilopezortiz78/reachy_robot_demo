@@ -34,11 +34,12 @@ def load_api_key(root: Path | None = None) -> str | None:
 
 # ── STT ───────────────────────────────────────────────────────────────────────
 
-# Whisper model for transcription. `whisper-large-v3-turbo` is ~2x faster and still
-# multilingual (the default here — the demo needs snappy turn-taking). The full
-# `whisper-large-v3` is slightly more accurate on long/hard non-English speech —
-# flip back live with: REACHY_STT_MODEL=whisper-large-v3 ./run.sh …
-STT_MODEL = os.environ.get("REACHY_STT_MODEL", "whisper-large-v3-turbo")
+# Whisper model for transcription. MEASURED: on real utterances turbo and full are
+# the same speed (~0.4s) — STT is NOT the latency bottleneck (VAD wait + reply
+# length are). So default to full `whisper-large-v3` for the best multilingual
+# accuracy at no speed cost. Force turbo live if ever needed:
+#   REACHY_STT_MODEL=whisper-large-v3-turbo ./run.sh …
+STT_MODEL = os.environ.get("REACHY_STT_MODEL", "whisper-large-v3")
 
 def transcribe(client: Groq, wav_bytes: bytes, language: str | None = None) -> str:
     """

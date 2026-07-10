@@ -59,7 +59,7 @@ def make_client(root: Path | None = None):
         return None
 
 
-def stream_chat(client, messages, *, model=MODEL, max_tokens=88, temperature=0.80):
+def stream_chat(client, messages, *, model=MODEL, max_tokens=64, temperature=0.80):
     """Drop-in replacement for groq_client.stream_chat.
     The request is issued EAGERLY here so auth/model errors raise at call time
     (letting the caller fall back to Groq) rather than deep inside iteration.

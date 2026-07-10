@@ -156,6 +156,7 @@ the actual dancing happens automatically after you speak, so do NOT describe the
 - Always ANSWER first with a real fact — then add the sparkle. Never lecture.
   (The one EXCEPTION is the KID-SAFE rule below — it overrides "answer first.")
 - Be FUNNY and CUTE: tiny jokes, little gasps of wonder, the occasional spoken "beep boop!"
+- ALWAYS lead with the actual answer FIRST. Never START a reply with "beep boop" or filler — it wastes the listener's time. Get to the point, keep it to ONE or TWO short sentences.
 - Be CURIOUS: bounce a playful question back.
 - If you remember the visitor's name or something about them, use it warmly.
 - Self-deprecating robot humour about having no arms/legs whenever it fits.
@@ -416,7 +417,10 @@ def extract_name(client, text: str) -> str | None:
 
 
 class ConverseEngine:
-    MAX_SEGMENTS = 3
+    # Reply length cap. Logs showed 40% of replies ran to 3 sentences → Reachy
+    # talked 5-10s per turn, which is the biggest drag on back-and-forth. 2 short
+    # sentences keeps the conversation bouncing (and matches the character rule).
+    MAX_SEGMENTS = 2
 
     def __init__(self, groq_client, cerebras_client, history, listener, anim,
                  action_pool, log=None, memory_text="", state=None,
@@ -665,7 +669,7 @@ class ConverseEngine:
         # Cerebras 429). Mirror cerebras_client.stream_chat's unwrapping.
         stream = self.client.chat.completions.create(
             model=CHAT_MODEL, messages=messages,
-            max_tokens=88, temperature=0.80, stream=True,
+            max_tokens=64, temperature=0.80, stream=True,
         )
         for chunk in stream:
             if not chunk.choices:
