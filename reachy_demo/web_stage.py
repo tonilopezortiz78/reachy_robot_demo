@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -642,7 +643,14 @@ class WebStage:
             d = await _safe_body(request); self.state.volume = max(0.0, min(5.0, _safe_float(d.get("volume"), 2.5))); return {"ok": True}
         @self.app.post("/api/rate")
         async def _ra(request: Request) -> dict:
-            d = await _safe_body(request); self.state.speech_rate = str(d.get("rate", "+20%"))[:10]; return {"ok": True}
+            # Validate the edge-tts rate string ("+NN%") before it reaches
+            # tts_edge.RATE — a malformed value would break every TTS call for
+            # the rest of the session with no self-recovery. Ignore bad input.
+            d = await _safe_body(request)
+            rate = str(d.get("rate", "+20%")).strip()[:10]
+            if re.fullmatch(r"[+-]?\d{1,3}%", rate):
+                self.state.speech_rate = rate
+            return {"ok": True, "rate": self.state.speech_rate}
         @self.app.post("/api/energy")
         async def _en(request: Request) -> dict:
             d = await _safe_body(request); self.state.energy = max(0.0, min(1.0, _safe_float(d.get("energy"), 1.0))); return {"ok": True}
