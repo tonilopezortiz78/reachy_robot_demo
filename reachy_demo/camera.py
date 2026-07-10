@@ -15,6 +15,7 @@ Provides:
     hub.stop()
 """
 
+import os
 import threading
 import time
 from typing import Callable
@@ -43,12 +44,43 @@ class CameraHub:
         self.last_fps: float = 0.0
         self.started_at: float = 0.0
 
+    def _open_device(self, dev: str) -> "cv2.VideoCapture | None":
+        """Open+configure a V4L2 capture. Returns None if it won't open/read."""
+        try:
+            cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+            cap.set(cv2.CAP_PROP_FPS, self.fps)
+            if cap.isOpened():
+                return cap
+            cap.release()
+        except Exception:
+            pass
+        return None
+
+    def _pick_device(self) -> "cv2.VideoCapture | None":
+        """Find a working capture device. Prefer the configured node, but after a
+        USB re-enumeration (the dance can jostle the cable) the camera may come back
+        on a different /dev/videoN, so fall back to probing the even-numbered nodes
+        (UVC capture nodes; odd ones are usually metadata)."""
+        candidates = [self.dev] + [f"/dev/video{i}" for i in (2, 0, 4, 6, 1, 3)]
+        seen = set()
+        for dev in candidates:
+            if dev in seen or not os.path.exists(dev):
+                continue
+            seen.add(dev)
+            cap = self._open_device(dev)
+            if cap is not None:
+                ok, _ = cap.read()          # a node that opens but never reads is useless
+                if ok:
+                    self.dev = dev
+                    return cap
+                cap.release()
+        return None
+
     def start(self):
-        self._cap = cv2.VideoCapture(self.dev, cv2.CAP_V4L2)
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        self._cap.set(cv2.CAP_PROP_FPS, self.fps)
-        if not self._cap.isOpened():
+        self._cap = self._open_device(self.dev)
+        if self._cap is None:
             raise RuntimeError(f"camera: cannot open {self.dev}")
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
@@ -64,11 +96,40 @@ class CameraHub:
     def _loop(self):
         fps_t = time.time()
         fps_count = 0
+        fail = 0
         while not self._stop.is_set():
-            ok, frame = self._cap.read()
+            cap = self._cap
+            ok, frame = False, None
+            if cap is not None:
+                try:
+                    ok, frame = cap.read()
+                except Exception:
+                    ok = False
             if not ok:
+                fail += 1
+                # ~1 s of failed reads → the USB link dropped (a vigorous dance can
+                # jostle the cable). The old handle returns False forever even after
+                # the device re-enumerates, so release it and reopen a fresh capture
+                # (possibly on a new /dev/videoN). Backoff so a truly-unplugged
+                # camera doesn't spin the CPU.
+                if fail >= 25:
+                    try:
+                        if self._cap is not None:
+                            self._cap.release()
+                    except Exception:
+                        pass
+                    self._cap = None
+                    newcap = self._pick_device()
+                    if newcap is not None:
+                        self._cap = newcap
+                        fail = 0
+                        print(f"  [camera] reconnected on {self.dev}", flush=True)
+                    else:
+                        time.sleep(1.0)   # camera still gone — wait before retrying
+                    continue
                 time.sleep(0.02)
                 continue
+            fail = 0
             # Store the CLEAN frame — overlay (boxes/name labels) is applied
             # only in mjpeg_bytes() for the dashboard. Drawing into the stored
             # frame contaminated frame_rgb()/frame_bgr(), so face recognition
