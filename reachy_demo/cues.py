@@ -21,7 +21,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from reachy_demo.audio import SPEAKER
+from reachy_demo.audio import SPEAKER, play_cmd  # noqa: F401
 from reachy_demo.tts_edge import synth_to_file
 
 ROOT = Path(__file__).parent.parent
@@ -197,7 +197,7 @@ def play_cue(kind: str, lang: str, block: bool = False):
     wav = cue_wav(kind, lang)
     if not wav:
         return None
-    proc = subprocess.Popen(["aplay", "-D", SPEAKER, "-q", wav],
+    proc = subprocess.Popen(play_cmd(wav),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if block:
         _wait_or_kill(proc)
@@ -266,7 +266,7 @@ def speak_cue(listener, kind: str, lang: str):
         for w in (beep, wav):
             if w:
                 proc = subprocess.Popen(
-                    ["aplay", "-D", SPEAKER, "-q", w],
+                    play_cmd(w),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
                 _wait_or_kill(proc)
@@ -316,7 +316,7 @@ def speak_thinking(listener, lang: str):
         for w in (beep, wav):
             if w:
                 proc = subprocess.Popen(
-                    ["aplay", "-D", SPEAKER, "-q", w],
+                    play_cmd(w),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
                 _wait_or_kill(proc)

@@ -104,6 +104,14 @@ GESTURE_TEMPLATES = [
     # head tilts — curious
     (2,  0.00,  0.00,  0.14, 0.00,  0.00,  0.00, 0.40),  # tilt L
     (2,  0.00,  0.00, -0.14, 0.00,  0.00,  0.00, 0.40),  # tilt R
+    # cute combos — head tilt + antenna perk together = the "puppy tilt" that
+    # reads as adorable/curious. Head+antenna moving as one unit is the single
+    # biggest cuteness lever; kept short and clamp-safe like the flicks.
+    (3,  0.00,  0.00,  0.15, 0.00,  0.45,  0.20, 0.42),  # puppy tilt L — ears perk
+    (3,  0.00,  0.00, -0.15, 0.00,  0.20,  0.45, 0.42),  # puppy tilt R — ears perk
+    (2,  0.06,  0.10,  0.10, 0.00,  0.40,  0.15, 0.40),  # peek up-left, curious perk
+    (2,  0.06, -0.10, -0.10, 0.00,  0.15,  0.40, 0.40),  # peek up-right, curious perk
+    (2,  0.09,  0.00,  0.00, 0.00,  0.50,  0.50, 0.30),  # happy bob — nod + both ears up
     # gaze shifts — looking around
     (1,  0.00,  0.20,  0.00, 0.00,  0.00,  0.00, 0.30),  # look L
     (1,  0.00, -0.20,  0.00, 0.00,  0.00,  0.00, 0.30),  # look R
@@ -123,7 +131,7 @@ GESTURE_TEMPLATES = [
 # the visitor is talking. Keep it nearly still (occasional gentle flick) while
 # listening; be lively again when idle/speaking.
 GESTURE_RATE = {
-    "idle":      0.75,
+    "idle":      1.05,   # attract mode: livelier when no one's talking, to invite people over
     "listening": 0.45,   # was 1.75 — quiet mic while the user speaks. DO NOT RAISE.
     "thinking":  1.15,
     "speaking":  2.60,   # was 2.00 — kids respond to near-constant motion while it talks
@@ -142,16 +150,16 @@ ANTENNA_NEUTRAL = {   # gentle pull toward this when in this state
 }
 ANTENNA_LIVENESS = {
     # idle: gentle — slightly narrower than before so idle reads calm next to speaking
-    "idle":      {"target_lo": -0.32, "target_hi":  0.40, "interval_lo": 0.18, "interval_hi": 0.42},
+    "idle":      {"target_lo": -0.45, "target_hi":  0.58, "interval_lo": 0.14, "interval_hi": 0.34},
     # listening: slow, small antenna drift so the servos are nearly silent while
     # the visitor talks (longer intervals = fewer moves = less mic noise).
     # Moderately livelier than before (antennas are the quietest servos), but
     # still clearly the calmest of the four states — mic-noise rule holds.
     "listening": {"target_lo":  0.15, "target_hi":  0.60, "interval_lo": 0.40, "interval_hi": 0.85},
-    "thinking":  {"target_lo": -0.25, "target_hi":  0.60, "interval_lo": 0.12, "interval_hi": 0.28},
+    "thinking":  {"target_lo": -0.35, "target_hi":  0.66, "interval_lo": 0.10, "interval_hi": 0.24},
     # speaking: big DOWNWARD sweep too (not just up) — more visible travel, and it
     # keeps the antennas off the +0.70 clamp so the motion doesn't flatten at top
-    "speaking":  {"target_lo": -0.38, "target_hi":  0.55, "interval_lo": 0.06, "interval_hi": 0.17},
+    "speaking":  {"target_lo": -0.52, "target_hi":  0.68, "interval_lo": 0.05, "interval_hi": 0.14},
 }
 ANTENNA_TAU = 0.05         # seconds — smoothing toward the new target
 ANTENNA_NEUTRAL_TAU = 1.2  # seconds — slow pull back to state neutral (avoids drift)
@@ -161,33 +169,33 @@ ANTENNA_NEUTRAL_TAU = 1.2  # seconds — slow pull back to state neutral (avoids
 # init), so the left and right antennas drift ASYMMETRICALLY like ears reacting
 # instead of moving in lockstep. Format: (amp1, freq1, amp2, freq2) rad / Hz.
 ANTENNA_SHIMMER = {
-    "idle":      (0.05, 0.45, 0.03, 1.10),   # gentle
-    "listening": (0.05, 0.32, 0.03, 0.75),   # moderate + slow — servos stay quiet
-    "thinking":  (0.08, 0.70, 0.04, 1.55),   # busy, pondering
-    "speaking":  (0.10, 0.90, 0.05, 2.05),   # bouncy, excited
+    "idle":      (0.10, 0.50, 0.06, 1.20),   # livelier idle — "attract" wiggle to pull kids over
+    "listening": (0.06, 0.34, 0.04, 0.80),   # still the quietest state (mic-safe), but a touch more life
+    "thinking":  (0.14, 0.78, 0.08, 1.70),   # busy, pondering ears
+    "speaking":  (0.20, 1.00, 0.11, 2.20),   # BIG bouncy ears — the kid-magnet while it talks
 }
 
 # Quick one-antenna "flick" / "perk" events on their own Poisson schedule
 # (events per second). Deliberately independent of GESTURE_RATE so LISTENING
 # gains antenna-only life WITHOUT any extra head/body servo noise near the mic.
 ANTENNA_FLICK_RATE = {
-    "idle":      0.30,
-    "listening": 0.35,   # antennas only — smallest/quietest servos, mic-safe
-    "thinking":  0.55,
-    "speaking":  0.85,
+    "idle":      0.55,   # frequent perky twitches even when idle — invites kids in
+    "listening": 0.45,   # antennas only — smallest/quietest servos, mic-safe
+    "thinking":  0.95,
+    "speaking":  1.50,   # near-constant happy ear-flicks while talking
 }
-ANTENNA_FLICK_AMP = (0.20, 0.38)   # rad — peak of the Gaussian flick envelope
-ANTENNA_FLICK_DUR = (0.30, 0.60)   # s — brief; reads as a very alive "ear twitch"
+ANTENNA_FLICK_AMP = (0.32, 0.58)   # rad — bigger, more visible "ear twitch"
+ANTENNA_FLICK_DUR = (0.24, 0.52)   # s — brief & snappy; reads as very alive
 
 # Hard rate limit (rad/s) on the COMBINED aliveness antenna offset (walk +
 # shimmer + flicks + gesture antenna components). Guarantees no per-frame jerk
 # regardless of how the layers stack — Feetech servos overheat under aggressive
 # duty, and sudden steps are the loudest thing the mic hears.
-ANTENNA_MAX_SLEW = 3.0
+ANTENNA_MAX_SLEW = 4.2   # raised so the bigger/snappier flicks aren't triangle-clipped
 
 # set_energy(): global liveliness multiplier for the shimmer/flick layers.
 ENERGY_DEFAULT   = 0.6   # default feel (matches pre-energy tuning); 1.0 = kid mode
-ENERGY_SCALE_MAX = 1.5   # cap on the internal scale so energy=1.0 can't peg servos
+ENERGY_SCALE_MAX = 1.9   # kid-mode energy=1.0 now drives noticeably bigger ear motion
 
 
 class _AlivenessLayer:

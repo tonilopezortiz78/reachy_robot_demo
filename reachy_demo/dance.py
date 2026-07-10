@@ -15,11 +15,12 @@ Beat timing: 103.4 BPM, pre-analysed with librosa (BEAT = 0.5805 s).
 Music:       ROOT/music/macarena.mp3 at +6 dB via ffmpeg → ALSA.
 """
 import math
+import os
 import subprocess
 import time
 from pathlib import Path
 
-from reachy_demo.audio import SPEAKER
+from reachy_demo.audio import SPEAKER, ff_output_args, play_cmd  # noqa: F401
 from reachy_demo.tts_edge import synth_to_file
 
 ROOT = Path(__file__).parent.parent
@@ -46,7 +47,7 @@ def _chirp(f0, f1, dur, vol=0.65):
         ["ffmpeg", "-hide_banner", "-loglevel", "error",
          "-f", "lavfi",
          "-i", f"aevalsrc=sin(2*PI*({f0}*t+({f1}-{f0})*t*t/(2*{dur})))*{vol}:c=mono:s=22050",
-         "-t", str(dur), "-f", "alsa", SPEAKER],
+         "-t", str(dur), *ff_output_args()],
         check=False, stderr=subprocess.DEVNULL,
     )
 
@@ -63,10 +64,18 @@ def excited_chirp():
     _chirp(800, 2200, 0.12, vol=0.85)
 
 
+# ── Dance tempo ──────────────────────────────────────────────────────────────
+# Global speed multiplier applied to every dance's beat interval. 2.0 = "double
+# time": the robot hits every HALF-beat of the (unchanged) music track, so it
+# dances twice as energetically over the same song without the audio sounding
+# sped up. _beat() self-adjusts each move's duration from the shortened interval,
+# so moves still complete. Tune live without editing code: REACHY_DANCE_SPEED=1.5
+_DANCE_SPEED = max(0.5, min(3.0, float(os.environ.get("REACHY_DANCE_SPEED", "2.0"))))
+
 # ── Macarena beat-sync constants ─────────────────────────────────────────────
 
 MUSIC_PATH = ROOT / "music" / "macarena.mp3"
-_BEAT = 0.5805   # 103.4 BPM, pre-analysed with librosa
+_BEAT = 0.5805 / _DANCE_SPEED   # 103.4 BPM base, scaled to double-time
 
 # 8-pose arm cycle — one pose per beat.
 # Fields: (pitch, yaw, roll, body_yaw, [ant_left, ant_right])
@@ -88,6 +97,13 @@ from reachy_mini.utils import create_head_pose   # noqa: E402 (after stdlib)
 
 def _clamp(v, lim):
     return max(-lim, min(lim, v))
+
+
+def _fast(v, floor=0.06):
+    """Scale a transition-move duration/sleep to the current dance speed. Keeps
+    _jump()/_spin360() proportional to the (shortened) beat at double-time so they
+    don't overrun several beats and cause the beat-catch-up loop to snap poses."""
+    return max(floor, v / _DANCE_SPEED)
 
 
 def _beat(mini, pose, scale, target_t):
@@ -125,24 +141,24 @@ def _spin360(mini):
     """360° illusion: blast to ±160°, snap across the gap, return to 0.
     Head tracks each spin direction for extra flair."""
     mini.goto_target(head=create_head_pose(pitch=0.10, yaw=0.50, degrees=False),
-                     antennas=[0.80, -0.80], body_yaw=2.79, duration=0.22)
-    time.sleep(0.02)
+                     antennas=[0.80, -0.80], body_yaw=2.79, duration=_fast(0.22))
+    time.sleep(_fast(0.02, 0.0))
     mini.goto_target(head=create_head_pose(pitch=0.10, yaw=-0.50, degrees=False),
-                     antennas=[-0.80, 0.80], body_yaw=-2.79, duration=0.18)
-    time.sleep(0.02)
+                     antennas=[-0.80, 0.80], body_yaw=-2.79, duration=_fast(0.18))
+    time.sleep(_fast(0.02, 0.0))
     mini.goto_target(head=create_head_pose(pitch=0.25, yaw=0.0, degrees=False),
-                     antennas=[0.80, 0.80], body_yaw=0.0, duration=0.28)
-    time.sleep(0.10)
+                     antennas=[0.80, 0.80], body_yaw=0.0, duration=_fast(0.28))
+    time.sleep(_fast(0.10, 0.0))
 
 
 def _jump(mini):
     """Slow push-down → instant snap-up (slingshot effect)."""
     mini.goto_target(head=create_head_pose(pitch=-0.38, roll=0.10, degrees=False),
-                     antennas=[-0.50, -0.50], body_yaw=0.0, duration=0.50)
-    time.sleep(0.02)
+                     antennas=[-0.50, -0.50], body_yaw=0.0, duration=_fast(0.50))
+    time.sleep(_fast(0.02, 0.0))
     mini.goto_target(head=create_head_pose(pitch=0.40, roll=-0.06, degrees=False),
-                     antennas=[0.90, 0.90], body_yaw=0.0, duration=0.07)
-    time.sleep(0.12)
+                     antennas=[0.90, 0.90], body_yaw=0.0, duration=_fast(0.07, 0.04))
+    time.sleep(_fast(0.12, 0.0))
 
 
 def _dance_n_beats(mini, n, scale=1.6):
@@ -197,7 +213,7 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None,
         else:
             ffmpeg_cmd += ["-af", "volume=2.0"]
 
-        ffmpeg_cmd += ["-t", str(music_duration), "-f", "alsa", SPEAKER]
+        ffmpeg_cmd += ["-t", str(music_duration), *ff_output_args()]
 
         music_proc = subprocess.Popen(ffmpeg_cmd)
         music_t0 = time.time()
@@ -265,7 +281,7 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None,
                 wav = None  # flaky wifi: skip the quip, the dance still finishes
             if wav:
                 play_proc = subprocess.Popen(
-                    ["aplay", "-D", SPEAKER, "-q", wav],
+                    play_cmd(wav),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
                 while play_proc.poll() is None:
@@ -298,7 +314,7 @@ def do_macarena(mini, dances, emotions, anim, log=None, funny_text=None,
 # ═══════════════════════════════════════════════════════════════════════════
 
 _WAVE_MUSIC = ROOT / "music" / "blipotron.mp3"
-_WAVE_BEAT = 0.4876   # 123.0 BPM
+_WAVE_BEAT = 0.4876 / _DANCE_SPEED   # 123.0 BPM base, scaled to double-time
 
 # 6-pose wave cycle: head bobs side to side, antennas flick like waving hands,
 # body sways gently. Designed to look like a happy robot waving at kids.
@@ -334,7 +350,7 @@ def do_robot_wave(mini, dances, emotions, anim, log=None, funny_text=None,
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-stream_loop", "-1", "-i", str(_WAVE_MUSIC),
             "-af", "volume=1.8",
-            "-t", str(music_duration), "-f", "alsa", SPEAKER,
+            "-t", str(music_duration), *ff_output_args(),
         ]
         music_proc = subprocess.Popen(ffmpeg_cmd)
         music_t0 = time.time()
@@ -397,7 +413,7 @@ def do_robot_wave(mini, dances, emotions, anim, log=None, funny_text=None,
                 wav = None  # flaky wifi: skip the quip, the dance still finishes
             if wav:
                 play_proc = subprocess.Popen(
-                    ["aplay", "-D", SPEAKER, "-q", wav],
+                    play_cmd(wav),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
                 while play_proc.poll() is None:
@@ -429,7 +445,7 @@ def do_robot_wave(mini, dances, emotions, anim, log=None, funny_text=None,
 # ═══════════════════════════════════════════════════════════════════════════
 
 _HOP_MUSIC = ROOT / "music" / "kick_shock.mp3"
-_HOP_BEAT = 0.4412   # 136.0 BPM
+_HOP_BEAT = 0.4412 / _DANCE_SPEED   # 136.0 BPM base, scaled to double-time
 
 # 4-pose hop cycle: crouch → hop → spin-pose → land. Fast and bouncy.
 _HOP_POSES = [
@@ -463,7 +479,7 @@ def do_happy_hop(mini, dances, emotions, anim, log=None, funny_text=None,
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-stream_loop", "-1", "-i", str(_HOP_MUSIC),
             "-af", "volume=2.0",
-            "-t", str(music_duration), "-f", "alsa", SPEAKER,
+            "-t", str(music_duration), *ff_output_args(),
         ]
         music_proc = subprocess.Popen(ffmpeg_cmd)
         music_t0 = time.time()
@@ -524,7 +540,7 @@ def do_happy_hop(mini, dances, emotions, anim, log=None, funny_text=None,
                 wav = None  # flaky wifi: skip the quip, the dance still finishes
             if wav:
                 play_proc = subprocess.Popen(
-                    ["aplay", "-D", SPEAKER, "-q", wav],
+                    play_cmd(wav),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
                 while play_proc.poll() is None:

@@ -21,7 +21,11 @@ from pathlib import Path
 
 import edge_tts as _edge_tts_mod  # import once at module level
 
-from reachy_demo.audio import SPEAKER, play_wav_blocking  # noqa: F401  (re-export)
+from reachy_demo.audio import (  # noqa: F401  (re-export for callers)
+    SPEAKER, play_wav_blocking, ff_output_args, set_output,
+)
+# NOTE: do NOT re-export audio.OUTPUT here — a plain import binds a stale copy that
+# never tracks set_output(). Read audio.OUTPUT directly, or call ff_output_args().
 
 # ── Voice constants ───────────────────────────────────────────────────────────
 
@@ -35,7 +39,11 @@ VOICE = "en-US-AvaMultilingualNeural"
 #        voice at 0Hz; this big lift is what makes Reachy sound like a little kid.
 #        This is intentional. If it ever sounds too chipmunky, dial back toward +32Hz.
 #        NEVER set to 0.
-# Vol:   ffmpeg volume multiplier (1.0 = unity, 2.0 = +6 dB, 2.5 = +8 dB)
+# Vol:   ffmpeg volume multiplier (1.0 = unity, 2.0 = +6 dB, 2.5 = +8 dB). Boost is
+#        clip-safe: an `alimiter` after the gain caps peaks at 0.95 so cranking the
+#        dashboard slider gets cleanly LOUDER instead of distorting. The robot's
+#        hardware PCM mixer is already at 0 dB max, so this digital stage is the only
+#        way to go above source level — the limiter is what keeps it clean.
 RATE, PITCH, VOL = "+20%", "+48Hz", "2.5"
 
 # ── Persistent event loop ─────────────────────────────────────────────────────
@@ -52,15 +60,22 @@ async def _edge_synth_coro(text: str, mp3_path: str, voice: str, rate: str, pitc
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def synth_to_file(text: str) -> str:
+def synth_to_file(text: str, boost: bool = True) -> str:
     """
     Synthesise text via edge-tts, resample to 48kHz WAV, return temp path.
     Caller must delete the returned file.
     Uses a single multilingual voice — language is passed through as-is.
+
+    boost=True bakes the current VOL + limiter into the file (normal one-shot
+    playback). boost=False writes the raw voice at unity gain — used to CACHE a
+    phrase so the live volume slider can be applied later at play time.
     """
     mp3 = tempfile.mktemp(suffix=".mp3")
     out = tempfile.mktemp(suffix=".wav")
     snippet = text[:50].replace("\n", " ")
+    af = ("aresample=resampler=swr:out_sample_rate=48000,"
+          f"volume={VOL},alimiter=limit=0.95:level=false") if boost else \
+         "aresample=resampler=swr:out_sample_rate=48000"
     try:
         t0 = time.time()
         future = asyncio.run_coroutine_threadsafe(
@@ -72,9 +87,7 @@ def synth_to_file(text: str) -> str:
         t1 = time.time()
         subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-             "-i", mp3,
-             "-af", f"aresample=resampler=swr:out_sample_rate=48000,volume={VOL}",
-             out],
+             "-i", mp3, "-af", af, out],
             check=True,
         )
         t_ffmpeg = time.time() - t1
@@ -88,10 +101,34 @@ def synth_to_file(text: str) -> str:
     return out
 
 
+def play_wav_file(path: str, stop_check=None) -> bool:
+    """Play a pre-rendered (unity-gain) WAV instantly, applying the CURRENT volume
+    + limiter and honouring the robot/projector routing. No network — used for the
+    cached dashboard quick-phrases so they fire with ~0 latency. Returns True if it
+    played to the end, False if aborted by stop_check or ffmpeg failed."""
+    ff = subprocess.Popen(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path,
+         "-af", f"volume={VOL},alimiter=limit=0.95:level=false",
+         *ff_output_args()],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        while ff.poll() is None:
+            if stop_check and stop_check():
+                ff.terminate()
+                try: ff.wait(timeout=0.5)
+                except subprocess.TimeoutExpired: ff.kill()
+                return False
+            time.sleep(0.03)
+        return ff.returncode == 0
+    finally:
+        if ff.poll() is None:
+            ff.kill()
+
+
 # ── Streaming playback (near-instant time-to-first-audio) ──────────────────────
 
-def stream_to_speaker(text: str, stop_check=None, on_first_audio=None,
-                      speaker: str = SPEAKER) -> bool:
+def stream_to_speaker(text: str, stop_check=None, on_first_audio=None) -> bool:
     """
     Stream edge-tts audio STRAIGHT to the robot speaker as chunks arrive, instead
     of synthesising the whole sentence to a file first. Audio starts ~0.4s after
@@ -99,7 +136,8 @@ def stream_to_speaker(text: str, stop_check=None, on_first_audio=None,
     near-instant.
 
     How: edge-tts `.stream()` yields MP3 chunks from Microsoft as they're
-    generated; we pipe them into `ffmpeg -i pipe:0 -f alsa <speaker>`, which
+    generated; we pipe them into ffmpeg → the current output (robot ALSA or
+    projector pulse, via audio.ff_output_args()), which
     decodes and plays incrementally. The persistent event loop produces chunks
     into a thread-safe queue; this (calling) thread feeds ffmpeg's stdin.
 
@@ -131,8 +169,8 @@ def stream_to_speaker(text: str, stop_check=None, on_first_audio=None,
     ff = subprocess.Popen(
         ["ffmpeg", "-hide_banner", "-loglevel", "error",
          "-f", "mp3", "-i", "pipe:0",
-         "-af", f"volume={VOL}",
-         "-f", "alsa", speaker],
+         "-af", f"volume={VOL},alimiter=limit=0.95:level=false",
+         *ff_output_args()],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 

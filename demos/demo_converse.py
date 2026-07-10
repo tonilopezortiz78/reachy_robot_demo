@@ -43,11 +43,13 @@ from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini.utils import create_head_pose
 
 from reachy_demo.animator import Animator, NAMED_GESTURES
+from reachy_demo import audio
 from reachy_demo.audio import (
     MIC_RATE, cleanup_orphan_capture, ensure_mic_working,
     error_chime, pcm_to_wav_bytes, startup_device_report,
     voice_filter_pcm,
 )
+from reachy_demo import phrases
 from reachy_demo.camera import CameraHub
 from reachy_demo.cerebras_client import make_client as make_cerebras, stream_chat as cerebras_stream, has_key as cerebras_has_key, MODEL as CEREBRAS_MODEL
 from reachy_demo.cues import prewarm, set_translator, speak_cue, speak_thinking
@@ -479,8 +481,13 @@ class ConverseEngine:
         self._drain_queue()
         self.listener.set_threshold_mode("barge_in")
         if self.state:
-            self.state.anim_state = "speaking"
+            # Stay in THINKING while the LLM streams — the dashboard "Thinking"
+            # row fills live with tokens and flips to "speaking" only when the
+            # first sentence actually starts playing (below). Also clear the
+            # previous turn's reply so the "Reachy" row doesn't show a stale answer.
+            self.state.anim_state = "thinking"
             self.state.llm_partial = ""
+            self.state.current_speech = ""
 
         seg_q = queue.Queue()
         _abort = threading.Event()
@@ -562,7 +569,13 @@ class ConverseEngine:
                 t_tts = time.time()
                 if self.state:
                     self.state.current_speech = text
-                ok = stream_to_speaker(text, stop_check=self._barge_in_detected)
+                # Flip the dashboard to SPEAKING on the LITERAL first audio sample
+                # (not when synthesis merely starts ~0.4s earlier), so the pipeline's
+                # thinking→speaking transition lines up with real sound.
+                _first_audio = (lambda: setattr(self.state, "anim_state", "speaking")) \
+                    if self.state else None
+                ok = stream_to_speaker(text, stop_check=self._barge_in_detected,
+                                       on_first_audio=_first_audio)
                 if first and self.state:
                     self.state.tts_tta_s = time.time() - t_tts
                 first = False
@@ -751,6 +764,7 @@ def main(dashboard_cls=None):
         dashboard = _cls(state, cam, host="0.0.0.0", port=8080)
         dashboard.start()
         log.event(f"  Web dashboard: http://localhost:8080")
+        phrases.prerender_async(log)   # cache quick-phrase WAVs in the background
     else:
         dashboard = None
 
@@ -845,6 +859,28 @@ def main(dashboard_cls=None):
                         if recorder is not None:
                             recorder.add_frame(rgb)
                         frame_n += 1
+                        # ── Emergency CROWD MODE ──────────────────────────────
+                        # 30 kids in frame makes normal behaviour go haywire: the
+                        # head whips toward whichever face is biggest, and the
+                        # onboarding/greeting logic fires nonstop. Crowd mode drops
+                        # ALL face reactions — no gaze-tracking, no name onboarding,
+                        # no per-face greetings — and just keeps the head calm and
+                        # centered so Reachy simply talks. Face-id is throttled to a
+                        # cheap headcount so a packed frame can't lag the loop.
+                        if state.crowd_mode:
+                            if frame_n % 5 == 0:
+                                try: state.faces_visible = len(fid.identify(rgb))
+                                except Exception: pass
+                            speaker_track_id[0] = None      # never let gaze get grabbed
+                            target_yaw *= 0.88; target_pitch *= 0.88; target_body *= 0.88
+                            ant_target = ANT_EXCITED if state.faces_visible else ANT_DROOP
+                            state.head_yaw = target_yaw; state.head_pitch = target_pitch
+                            state.body_yaw = target_body
+                            state.antenna_left = state.antenna_right = ant_target
+                            anim.set_gaze_bias(target_yaw, target_pitch, target_body)
+                            cam.last_boxes = []             # no boxes drawn in a crowd
+                            time.sleep(0.10)
+                            continue
                         try:
                             results = fid.identify(rgb)
                         except Exception as e:
@@ -995,7 +1031,10 @@ def main(dashboard_cls=None):
                     # recognition once produced a greeting every ~8 s, muting the
                     # mic so often the robot appeared to have stopped listening.
                     now = time.time()
-                    if state.anim_state == "speaking" or now - last_any_greet[0] < 20.0:
+                    # A turn now spends its LLM phase in "thinking" (speech_lock held),
+                    # so treat thinking like speaking — otherwise a greeting here passes
+                    # the gate, burns the 20s throttle, then no-ops on the held lock.
+                    if state.anim_state in ("speaking", "thinking") or now - last_any_greet[0] < 20.0:
                         return
                     last_any_greet[0] = now
                     def _say():
@@ -1076,9 +1115,18 @@ def main(dashboard_cls=None):
                                 state.anim_state = "speaking"
                                 try:
                                     listener.mute()
-                                    stream_to_speaker(t)
+                                    # Instant path: a pre-rendered quick phrase plays
+                                    # its cached WAV (no edge-tts round-trip); anything
+                                    # else streams live.
+                                    cached = phrases.cached_wav(t)
+                                    if cached:
+                                        state.current_speech = t
+                                        tts_edge.play_wav_file(cached)
+                                    else:
+                                        stream_to_speaker(t)
                                 finally:
                                     listener.unmute()
+                                    state.current_speech = ""
                                     state.anim_state = "listening"
                                     speech_lock.release()
                             threading.Thread(target=_do_say, args=(say_text,), daemon=True).start()
@@ -1133,6 +1181,8 @@ def main(dashboard_cls=None):
                     # Live volume / rate / energy controls from dashboard
                     if tts_edge.VOL != str(state.volume):
                         tts_edge.VOL = str(state.volume)
+                    if audio.OUTPUT != state.audio_device:
+                        audio.set_output(state.audio_device)
                     if tts_edge.RATE != state.speech_rate:
                         tts_edge.RATE = state.speech_rate
                     if hasattr(anim, '_energy') and anim._energy != state.energy:
@@ -1237,6 +1287,7 @@ def main(dashboard_cls=None):
                         log.event(f"  [heard] utterance {utt_s:.1f}s → transcribing")
                         anim.set_state(Animator.THINKING)
                         state.anim_state = "thinking"
+                        state.last_user = ""      # clear prev transcript; STT fills it fresh below
                         audio_path = log.save_audio(pcm)
                         if recorder is not None:
                             recorder.add_audio(pcm, "utt")

@@ -29,6 +29,42 @@ from silero_vad import VADIterator
 
 SPEAKER = "plughw:CARD=Audio,DEV=0"
 
+# ── Playback routing: robot USB speaker vs projector/HDMI ─────────────────────
+# Single source of truth for WHERE all robot audio goes — voice, dance music,
+# beeps, cue chimes. Dashboard toggles this at runtime via set_output().
+#   "robot"     → robot USB speaker, direct ALSA (default; bypasses PipeWire).
+#   "projector" → HDMI/projector speaker via PipeWire (paplay/ffmpeg -f pulse) —
+#                 much louder for a big room; the robot's USB speaker is capped
+#                 at 0 dB in hardware, so a projector is the only way to go louder.
+OUTPUT = "robot"
+PROJECTOR_SINK = "alsa_output.pci-0000_00_1f.3.hdmi-stereo"
+
+
+def set_output(target: str) -> str:
+    """Switch all playback between 'robot' and 'projector'. Returns value set."""
+    global OUTPUT
+    OUTPUT = "projector" if target == "projector" else "robot"
+    return OUTPUT
+
+
+def ff_output_args() -> list:
+    """ffmpeg output muxer + device for the current target (voice/music/beeps).
+
+    For the pulse muxer the SINK is selected with `-device`; the trailing
+    positional is only a stream label (a bare sink name there is silently
+    ignored and audio leaks to the default sink — verified the hard way)."""
+    if OUTPUT == "projector":
+        return ["-f", "pulse", "-device", PROJECTOR_SINK, "reachy"]
+    return ["-f", "alsa", SPEAKER]
+
+
+def play_cmd(path: str) -> list:
+    """Blocking WAV-file player argv for the current target.
+    Robot → aplay (ALSA direct). Projector → paplay (PipeWire sink)."""
+    if OUTPUT == "projector":
+        return ["paplay", f"--device={PROJECTOR_SINK}", path]
+    return ["aplay", "-D", SPEAKER, "-q", path]
+
 # ── Microphone selection ──────────────────────────────────────────────────────
 # IMPORTANT: this machine has MULTIPLE microphones. We MUST use the robot's own
 # mic, not the laptop's — the laptop mic captures room noise instead of the
@@ -503,7 +539,7 @@ MAX_RECORD_S   = 15.0         # safety cap
 def _beep(expr, dur, vol=0.5, block=True):
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
            "-f", "lavfi", "-i", f"aevalsrc={expr}*{vol}:c=mono:s=22050",
-           "-t", str(dur), "-f", "alsa", SPEAKER]
+           "-t", str(dur), *ff_output_args()]
     if block:
         subprocess.run(cmd, check=False, stderr=subprocess.DEVNULL)
     else:
@@ -686,7 +722,7 @@ def play_wav_blocking(path: str):
     except Exception:
         timeout = 30.0
     proc = subprocess.Popen(
-        ["aplay", "-D", SPEAKER, "-q", path],
+        play_cmd(path),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:

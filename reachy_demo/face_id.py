@@ -64,6 +64,11 @@ _ARC_FACE_REF = np.array([
 # Cosine-distance acceptance threshold (~0.40 → ~99% same-person on SFace LFW).
 DEFAULT_TOLERANCE = 0.40
 RECOG_INTERVAL = 15   # frames between recognition runs per track
+# Minimum face box size (px, in the ~640-wide capture frame) to attempt a match.
+# Small = far away = low-res crop → SFace embeddings become unreliable and get
+# force-matched to whoever is enrolled (the "everyone is Tony" bug). Below this,
+# treat the person as an unidentified visitor until they step closer.
+MIN_RECOG_PX = 84
 ENROLL_IOU_MIN = 0.15  # min IoU vs target_box for targeted enrolment (person may shift)
 
 RELATION_NORM = np.linalg.norm(_ARC_FACE_REF, axis=None) or 1.0
@@ -639,6 +644,9 @@ class FaceIdentifier:
     def _recognize_box(self, rgb_frame: np.ndarray,
                        box: tuple, dets: list) -> tuple[str, float]:
         if self._ref_embs is None or len(self._ref_embs) == 0:
+            return ("visitor", 0.0)
+        # Too-small face = too far for a trustworthy embedding → don't guess a name.
+        if (box[2] - box[0]) < MIN_RECOG_PX or (box[3] - box[1]) < MIN_RECOG_PX:
             return ("visitor", 0.0)
         bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
         if self._use_modern:

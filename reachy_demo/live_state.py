@@ -66,6 +66,8 @@ class LiveState:
     volume: float = 2.5              # ffmpeg volume multiplier (1.0=unity, 2.5=+8dB)
     speech_rate: str = "+20%"        # edge-tts rate offset
     energy: float = 1.0              # antenna liveliness 0.0-1.0
+    audio_device: str = "robot"      # playback target: "robot" (USB speaker) | "projector" (HDMI)
+    crowd_mode: bool = False         # emergency: ignore faces (no gaze-tracking/onboarding/greeting), just talk
 
     # Audio tuning — live-adjustable from the control panel for an on-site
     # sound-check. main() overwrites these at startup from the speech_gate /
@@ -137,6 +139,8 @@ class LiveState:
             "volume": self.volume,
             "speech_rate": self.speech_rate,
             "energy": self.energy,
+            "audio_device": self.audio_device,
+            "crowd_mode": self.crowd_mode,
             "gate_min_rms": round(self.gate_min_rms, 1),
             "gate_min_voiced": round(self.gate_min_voiced, 2),
             "gate_min_peak": round(self.gate_min_peak, 2),

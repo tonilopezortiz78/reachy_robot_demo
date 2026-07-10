@@ -53,8 +53,8 @@ html,body{height:100%;background:#0a0a0a;color:#fff;font-family:system-ui,sans-s
 #state-tag.listening{background:rgba(34,197,94,.5);box-shadow:0 0 20px rgba(34,197,94,.4)}
 #state-tag.thinking{background:rgba(245,158,11,.5);box-shadow:0 0 20px rgba(245,158,11,.4)}
 #state-tag.dancing{background:rgba(168,85,247,.5);box-shadow:0 0 20px rgba(168,85,247,.4)}
-#face-bar{position:absolute;bottom:0;left:0;right:0;display:flex;gap:6px;padding:10px;background:rgba(0,0,0,.7);overflow-x:auto;min-height:50px;align-items:center}
-.face-tag{display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:999px;font-size:1.1rem;font-weight:800;white-space:nowrap;flex-shrink:0;animation:popin .3s ease}
+#face-bar{position:absolute;bottom:0;left:0;right:0;display:flex;gap:6px;padding:12px;background:rgba(0,0,0,.7);overflow-x:auto;min-height:64px;align-items:center}
+.face-tag{display:flex;align-items:center;gap:8px;padding:8px 20px;border-radius:999px;font-size:2rem;font-weight:900;white-space:nowrap;flex-shrink:0;animation:popin .3s ease}
 @keyframes popin{from{transform:scale(.5);opacity:0}to{transform:scale(1);opacity:1}}
 .face-tag.known{background:rgba(34,197,94,.3);border:2px solid rgba(34,197,94,.6);color:#bbf7d0}
 .face-tag.visitor{background:rgba(96,165,250,.3);border:2px solid rgba(96,165,250,.6);color:#bfdbfe}
@@ -73,6 +73,23 @@ html,body{height:100%;background:#0a0a0a;color:#fff;font-family:system-ui,sans-s
 #caption .blink{display:inline-block;width:3px;height:1.6rem;background:currentColor;margin-left:4px;animation:blk .8s steps(2) infinite}
 @keyframes blk{50%{opacity:0}}
 #caption.speaking{color:#bfdbfe}#caption.thinking{color:#fbbf24;font-style:italic}#caption.listening{color:rgba(255,255,255,.3);font-size:1.1rem}#caption.empty{color:rgba(255,255,255,.15);font-size:.9rem}
+
+/* ── hear→understand→think→speak process (stage, kid-facing) ── */
+#pipeline{display:flex;flex-direction:column;gap:6px;padding:12px 14px}
+.prow{display:flex;gap:11px;align-items:flex-start;opacity:.28;border-radius:10px;padding:6px 9px;transition:opacity .3s,background .3s}
+.prow.on{opacity:1}
+.prow.on .pr-ic{animation:pop .35s ease}
+@keyframes pop{0%{transform:scale(.7)}60%{transform:scale(1.15)}100%{transform:scale(1)}}
+#pr-hear.on{background:rgba(34,197,94,.14)}
+#pr-words.on{background:rgba(16,185,129,.14)}
+#pr-think.on{background:rgba(245,158,11,.14)}
+#pr-say.on{background:rgba(59,130,246,.16)}
+.pr-ic{font-size:1.6rem;line-height:1.2;flex-shrink:0}
+.pr-body{flex:1;min-width:0}
+.pr-lbl{font-size:.58rem;text-transform:uppercase;letter-spacing:.07em;opacity:.55;font-weight:700;margin-bottom:1px}
+.pr-txt{font-size:1.05rem;font-weight:700;line-height:1.22;word-wrap:break-word;overflow-wrap:anywhere}
+#pr-words-t{color:#a7f3d0}#pr-think-t{font-style:italic;color:#fbbf24}#pr-say-t{color:#bfdbfe}
+.pr-txt .blink{display:inline-block;width:3px;height:1.05rem;background:currentColor;margin-left:3px;animation:blk .8s steps(2) infinite;vertical-align:middle}
 
 #fact-bar{display:flex;align-items:center;gap:8px;font-size:.9rem;color:#94a3b8;min-height:30px}
 #fact-bar .icon{font-size:1.2rem}
@@ -93,6 +110,8 @@ html,body{height:100%;background:#0a0a0a;color:#fff;font-family:system-ui,sans-s
 b{border-radius:6px;padding:7px 12px;cursor:pointer;font-size:.82rem;font-weight:600;border:1px solid;transition:.12s}
 b.df{background:#334155;color:#e5e7eb;border-color:#475569}
 b.df:hover{background:#475569;border-color:#64748b}
+b.out-btn{font-size:.78rem;padding:3px 9px;opacity:.5}
+b.out-btn.on{background:#1e3a8a;border-color:#3b82f6;color:#bfdbfe;opacity:1}
 b.go{background:#14532d;border-color:#166534;color:#bbf7d0}
 b.go:hover{background:#166534}
 b.warn{background:#78350f;border-color:#92400e;color:#fde68a}
@@ -142,7 +161,12 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
   </div>
   <div id="info">
     <div id="big-status" class="card"><div class="icon" id="big-icon">🤖</div><div class="txt" id="big-txt">Ready!<span class="sub">Reachy is waiting to meet you</span></div></div>
-    <div id="caption" class="card empty">...</div>
+    <div id="pipeline" class="card">
+      <div class="prow" id="pr-hear"><span class="pr-ic">👂</span><div class="pr-body"><div class="pr-lbl">1 · Hearing you</div><div class="pr-txt" id="pr-hear-t">…</div></div></div>
+      <div class="prow" id="pr-words"><span class="pr-ic">📝</span><div class="pr-body"><div class="pr-lbl">2 · Understanding the words</div><div class="pr-txt" id="pr-words-t">…</div></div></div>
+      <div class="prow" id="pr-think"><span class="pr-ic">🧠</span><div class="pr-body"><div class="pr-lbl">3 · Thinking of an answer</div><div class="pr-txt" id="pr-think-t">…</div></div></div>
+      <div class="prow" id="pr-say"><span class="pr-ic">💬</span><div class="pr-body"><div class="pr-lbl">4 · Talking back</div><div class="pr-txt" id="pr-say-t">…</div></div></div>
+    </div>
     <div id="fact-bar" class="card"><span class="icon">💡</span><span id="fact-txt">Reachy wants arms and legs someday!</span></div>
     <div id="face-list" class="card"><span style="color:rgba(255,255,255,.2)">come say hello!</span></div>
   </div>
@@ -161,9 +185,13 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
       <div class="row">
         <label class="toggle" id="kid-t"><div class="sw"></div><span>Kid mode</span></label>
         <label class="toggle" id="mute-t"><div class="sw"></div><span>Mute</span></label>
+        <label class="toggle" id="crowd-t"><div class="sw"></div><span>🧑‍🤝‍🧑 Crowd mode</span></label>
       </div>
+      <div style="font-size:.68rem;color:#94a3b8;margin:-2px 0 2px">Crowd mode = ignore faces (no head-tracking/greeting), just talk. Flip it when the room fills up.</div>
       <h2 style="margin-top:14px">Make Reachy say</h2>
       <div class="row"><input type="text" id="say-i" placeholder="Type a line, Enter to fire" onkeydown="if(event.key==='Enter')S()"><b class="go" onclick="S()">Say</b></div>
+      <h2 style="margin-top:14px">Quick phrases</h2>
+      <div class="row" id="ph-grid"></div>
     </div>
     <div class="cd">
       <h2>Gestures (19)</h2>
@@ -201,6 +229,11 @@ input[type=text]:focus{outline:none;border-color:#60a5fa}
     </div>
     <div class="cd">
       <h2>Audio &amp; energy</h2>
+      <div class="stat"><span class="k">Speaker</span><span class="v">
+        <b class="df out-btn on" id="out-robot" onclick="setOut('robot')">🤖 Robot</b>
+        <b class="df out-btn" id="out-proj" onclick="setOut('projector')">📽️ Projector</b>
+      </span></div>
+      <div style="font-size:.68rem;color:#94a3b8;margin:2px 0 8px">Projector = HDMI speaker, much louder for a big room.</div>
       <div class="stat"><span class="k">Volume</span><span class="v" id="s-vol">2.5</span></div>
       <input type="range" id="vol-sl" min="0" max="5" step=".1" value="2.5" style="width:100%;margin-bottom:8px" oninput="dV('vol',this.value)">
       <div class="stat"><span class="k">Rate</span><span class="v" id="s-rate">+20%</span></div>
@@ -381,7 +414,7 @@ function drawScope(){
 }
 requestAnimationFrame(drawScope);
 
-let ls='',lsp='',lfn='',ft=0,fi=0,kid=true,mute=false,vd=false,rd=false,ed=false;
+let ls='',lsp='',lfn='',ft=0,fi=0,kid=true,mute=false,crowd=false,vd=false,rd=false,ed=false;
 let rmsd=false,void_=false,pkd=false,durd=false,vadd=false,brgd=false;
 
 function R(s){
@@ -394,17 +427,29 @@ function R(s){
   $('big-txt').innerHTML=M[st]+'<span class="sub">'+
     {idle:'Reachy is ready to meet you',listening:'Reachy hears you — talk to me!',thinking:'Reachy is figuring it out...',speaking:'Reachy is replying now!',dancing:'Party time!'}[st]+'</span>';
 
-  const sp=s.current_speech||'';
-  const cp=$('caption');
-  if(sp&&sp!==lsp){
-    cp.className='card speaking';cp.innerHTML=esc(sp)+'<span class="blink"></span>';lsp=sp;
-  }else if(!sp&&s.llm_partial){
-    cp.className='card thinking';cp.innerHTML=esc(s.llm_partial.slice(-100))+'...';lsp='';
-  }else if(!sp&&st==='listening'){
-    cp.className='card listening';cp.innerHTML='Say something! Reachy can hear you...';lsp='';
-  }else if(!sp){
-    cp.className='card empty';cp.innerHTML='...';lsp='';
-  }
+  // 4-step process the kids can follow: Hear → Understand → Think → Talk.
+  // STT and LLM both live in anim_state 'thinking'; we split them by whether the
+  // LLM has started streaming (llm_partial): empty = still turning sound into words.
+  const think=s.llm_partial||'';
+  const sttPhase=(st==='thinking' && !think);   // got audio, working out the words
+  const llmPhase=(st==='thinking' && !!think);  // words known, composing a reply
+  // 1 · Hearing
+  $('pr-hear-t').textContent = st==='listening' ? (s.vad_in_speech?'I hear you! 🎤':'Listening for a voice…')
+                             : (st==='idle'?'…':'Got it! 👂');
+  // 2 · Understanding the words (STT transcript)
+  $('pr-words-t').innerHTML = s.last_user ? esc(s.last_user)
+                            : (sttPhase?'turning sound into words…<span class="blink"></span>':'…');
+  // 3 · Thinking (LLM stream)
+  $('pr-think-t').innerHTML = think ? esc(think.slice(-140))+(llmPhase?'<span class="blink"></span>':'')
+                            : (llmPhase?'…<span class="blink"></span>':'…');
+  // 4 · Talking back (TTS). Blank while still thinking; keep the finished reply once idle.
+  let say = st==='speaking' ? (s.current_speech||s.last_reply||'')
+          : st==='thinking' ? '' : (s.last_reply||'');
+  $('pr-say-t').innerHTML=(say?esc(say):'…')+(st==='speaking'?'<span class="blink"></span>':'');
+  $('pr-hear').classList.toggle('on',st==='listening');
+  $('pr-words').classList.toggle('on',sttPhase);
+  $('pr-think').classList.toggle('on',llmPhase);
+  $('pr-say').classList.toggle('on',st==='speaking'||st==='dancing');
 
   const n=Date.now();
   if(n-ft>7000){fi=(fi+1)%F.length;ft=n;$('fact-txt').textContent=F[fi];}
@@ -436,8 +481,9 @@ function R(s){
   $('c-co').textContent='$'+s.est_cost_usd.toFixed(4);
   $('c-lu').textContent=s.last_user||'-';$('c-lr').textContent=s.last_reply||'-';
 
-  kid=s.kid_mode;T('kid-t',kid);mute=s.muted;T('mute-t',mute);
+  kid=s.kid_mode;T('kid-t',kid);mute=s.muted;T('mute-t',mute);crowd=!!s.crowd_mode;T('crowd-t',crowd);
   if(!vd){$('vol-sl').value=s.volume;$('s-vol').textContent=s.volume.toFixed(1);}
+  {const proj=s.audio_device==='projector';$('out-robot').classList.toggle('on',!proj);$('out-proj').classList.toggle('on',proj);}
   if(!rd){$('rate-sl').value=parseInt(s.speech_rate)||20;$('s-rate').textContent=s.speech_rate;}
   if(!ed){$('ene-sl').value=s.energy;$('s-ene').textContent=s.energy.toFixed(1);}
   if(!rmsd){$('rms-sl').value=s.gate_min_rms;$('s-rms').textContent=Math.round(s.gate_min_rms);}
@@ -492,7 +538,13 @@ function P(url,body){fetch(url,{method:'POST',headers:{'Content-Type':'applicati
 function S(){const t=$('say-i');if(t.value.trim()){P('/api/say',{text:t.value});t.value='';}}
 $('kid-t').onclick=()=>{kid=!kid;T('kid-t',kid);P('/api/kid',{on:kid});};
 $('mute-t').onclick=()=>{mute=!mute;T('mute-t',mute);P('/api/mute',{muted:mute});};
+$('crowd-t').onclick=()=>{crowd=!crowd;T('crowd-t',crowd);P('/api/crowd',{on:crowd});};
 
+function setOut(dev){
+  $('out-robot').classList.toggle('on',dev==='robot');
+  $('out-proj').classList.toggle('on',dev==='projector');
+  P('/api/output',{device:dev});
+}
 let vt,rt,et;
 function dV(k,v){
   if(k==='vol'){vd=true;$('s-vol').textContent=parseFloat(v).toFixed(1);clearTimeout(vt);vt=setTimeout(()=>{P('/api/volume',{volume:parseFloat(v)});vd=false;},300);}
@@ -514,6 +566,13 @@ function dA(k,v){
 
 const gg=$('g-grid');
 G.forEach(g=>{const b=document.createElement('b');b.className='df';b.textContent=g;b.onclick=()=>P('/api/gesture',{name:g});gg.appendChild(b);});
+
+// Quick-play phrases — pre-rendered to cached WAVs server-side so they fire
+// instantly. Injected from reachy_demo/phrases.py (single source of truth, so
+// the cache keys match). label → spoken text.
+const PHRASES=__PHRASES__;
+const pg=$('ph-grid');
+PHRASES.forEach(([label,text])=>{const b=document.createElement('b');b.className='df';b.textContent=label;b.onclick=()=>P('/api/say',{text});pg.appendChild(b);});
 
 let lp=-1;
 function H(){
@@ -571,10 +630,13 @@ class WebStage:
 
     def _register_routes(self) -> None:
         gestures_json = json.dumps(GESTURES)
+        from reachy_demo.phrases import QUICK_PHRASES
+        phrases_json = json.dumps(QUICK_PHRASES)
 
         @self.app.get("/")
         def _index() -> HTMLResponse:
-            return HTMLResponse(_HTML.replace("__GESTURES__", gestures_json))
+            return HTMLResponse(_HTML.replace("__GESTURES__", gestures_json)
+                                     .replace("__PHRASES__", phrases_json))
 
         @self.app.get("/video")
         def _video() -> StreamingResponse:
@@ -641,6 +703,14 @@ class WebStage:
         @self.app.post("/api/volume")
         async def _vo(request: Request) -> dict:
             d = await _safe_body(request); self.state.volume = max(0.0, min(5.0, _safe_float(d.get("volume"), 2.5))); return {"ok": True}
+        @self.app.post("/api/output")
+        async def _op(request: Request) -> dict:
+            d = await _safe_body(request)
+            self.state.audio_device = "projector" if str(d.get("device")) == "projector" else "robot"
+            return {"ok": True, "device": self.state.audio_device}
+        @self.app.post("/api/crowd")
+        async def _cr(request: Request) -> dict:
+            d = await _safe_body(request); self.state.crowd_mode = bool(d.get("on", False)); return {"ok": True}
         @self.app.post("/api/rate")
         async def _ra(request: Request) -> dict:
             # Validate the edge-tts rate string ("+NN%") before it reaches
