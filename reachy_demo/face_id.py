@@ -61,8 +61,14 @@ _ARC_FACE_REF = np.array([
     [70.7299, 92.2041],
 ], dtype=np.float32)
 
-# Cosine-distance acceptance threshold (~0.40 → ~99% same-person on SFace LFW).
-DEFAULT_TOLERANCE = 0.40
+# Cosine acceptance threshold. Raised 0.40 → 0.55 after MEASURING the enrolled
+# roster: a real person's own photos match each other at 0.66-1.0 cosine (and
+# score ~0.89 live), while 0.40 let ANY vaguely-similar stranger cross and be
+# labeled that person — the "friend gets recognized as me" bug, which ALSO broke
+# onboarding (a new face matching an existing person >tol is rejected as "already
+# known", so the visitor could never be enrolled → "I couldn't see your face").
+# 0.55 sits well below a genuine self-match but far above the stranger range.
+DEFAULT_TOLERANCE = 0.55
 RECOG_INTERVAL = 15   # frames between recognition runs per track
 # Minimum face box size (px, in the ~640-wide capture frame) to attempt a match.
 # Small = far away = low-res crop → SFace embeddings become unreliable and get
